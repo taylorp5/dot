@@ -46,6 +46,7 @@ export default function Home() {
   const [pendingPlacements, setPendingPlacements] = useState<PendingDotPlacement[]>([])
   const [inFlightCount, setInFlightCount] = useState(0)
   const [pendingBlindIds, setPendingBlindIds] = useState<Set<string>>(new Set()) // Set of in-flight blind dot clientDotIds
+  const [isRevealing, setIsRevealing] = useState(false) // Track if reveal is in progress
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const canvasContainerRef = useRef<HTMLDivElement>(null)
   
@@ -303,58 +304,37 @@ export default function Home() {
         const data = await response.json()
 
         if (!response.ok) {
-          // Handle NO_FREE_DOTS error
+          // Handle NO_FREE_DOTS error (409) - authoritative signal that blind phase is over
           if (response.status === 409 && data.error === 'NO_FREE_DOTS') {
-            console.log('[CLIENT] No free dots left, server confirmed')
+            console.log('[CLIENT] NO_FREE_DOTS - triggering reveal sequence')
             
-            // Update serverSession from response (source of truth)
-            if (data.session) {
-              const updatedSession: Session = {
-                sessionId: data.session.sessionId,
-                colorName: data.session.colorName,
-                colorHex: data.session.colorHex,
-                blindDotsUsed: data.session.blindDotsUsed,
-                revealed: data.session.revealed,
-                credits: data.session.credits
-              }
-              
-              // Prevent out-of-order overwrites: only accept if blindDotsUsed >= current
-              setServerSession(prev => {
-                if (!prev || updatedSession.blindDotsUsed >= prev.blindDotsUsed) {
-                  return updatedSession
-                }
-                return prev
-              })
-              
-              setIsRevealed(updatedSession.revealed)
-              localStorage.setItem('dotSession', JSON.stringify(updatedSession))
-
-              // Rollback extra optimistic dots beyond allowed
-              if (!isRevealed) {
-                setLocalDots(prev => {
-                  // Keep only the first (10 - blindDotsUsed) dots for this session
-                  const allowedCount = 10 - updatedSession.blindDotsUsed
-                  const sessionDots = prev.filter(dot => dot.sessionId === updatedSession.sessionId && dot.phase === 'blind')
-                  const otherDots = prev.filter(dot => dot.sessionId !== updatedSession.sessionId || dot.phase !== 'blind')
-                  return [...otherDots, ...sessionDots.slice(0, allowedCount)]
-                })
-              }
-
-              // Trigger auto-reveal if needed
-              if (updatedSession.blindDotsUsed >= 10 && updatedSession.revealed) {
-                console.log('[CLIENT] Auto-revealing, fetching all dots')
-                setLocalDots([])
-                await fetchAllDots(updatedSession.sessionId)
-              }
+            // a) Stop accepting/enqueuing additional blind clicks (freeze blind queue)
+            // b) Clear/cancel any queued blind requests that haven't been sent yet
+            setPendingPlacements(prev => prev.filter(p => p.phase !== 'blind'))
+            setPendingBlindIds(new Set()) // Clear all pending blind IDs
+            
+            // c) Call POST /api/session/reveal and await it
+            // d) Fetch GET /api/session/get to refresh session state
+            // e) Only after revealed is confirmed true, call GET /api/dots/all
+            await triggerReveal(serverSession.sessionId)
+            
+            // Rollback optimistic dots
+            if (requestPhase === 'blind') {
+              setLocalDots(prev => prev.filter(dot => dot.clientDotId !== requestClientDotId))
             }
-
-            // Stop accepting new blind dots (remaining will become 0)
-            setPendingPlacements(prev => prev.filter(p => p.clientDotId !== next.clientDotId))
+            
             next.reject(new Error('NO_FREE_DOTS'))
+          } else if (response.status === 400 && data.error === 'Insufficient credits') {
+            // Handle insufficient credits silently (no error logging)
+            // Remove optimistic dot if it was a paid request
+            if (requestPhase === 'paid') {
+              // Paid dots don't have optimistic UI, but clean up if needed
+            }
+            next.reject(new Error('Insufficient credits'))
           } else {
             // Other errors: remove optimistic dot
-            if (!isRevealed) {
-              setLocalDots(prev => prev.filter(dot => dot.clientDotId !== next.clientDotId))
+            if (requestPhase === 'blind') {
+              setLocalDots(prev => prev.filter(dot => dot.clientDotId !== requestClientDotId))
             }
             next.reject(new Error(data.error || 'Failed to place dot'))
           }
@@ -383,21 +363,24 @@ export default function Home() {
         setIsRevealed(updatedSession.revealed)
         localStorage.setItem('dotSession', JSON.stringify(updatedSession))
 
-        // Handle auto-reveal
-        if (!serverSession.revealed && updatedSession.revealed) {
-          console.log('[CLIENT] Auto-revealing, fetching all dots')
-          setLocalDots([])
-          await fetchAllDots(updatedSession.sessionId)
+        // Auto-reveal on success path: if blindDotsUsed === 10, run reveal sequence
+        if (updatedSession.blindDotsUsed === 10 && !serverSession.revealed) {
+          console.log('[CLIENT] Auto-revealing (blindDotsUsed === 10)')
+          setLocalDots([]) // Clear local dots
+          await triggerReveal(updatedSession.sessionId)
         }
 
         next.resolve(updatedSession)
         setInFlightCount(prev => prev - 1)
       } catch (error) {
         // Remove optimistic dot on error
-        if (!isRevealed) {
-          setLocalDots(prev => prev.filter(dot => dot.clientDotId !== next.clientDotId))
+        if (requestPhase === 'blind') {
+          setLocalDots(prev => prev.filter(dot => dot.clientDotId !== requestClientDotId))
         }
-        console.error('[CLIENT] Error placing dot:', error)
+        // Don't log "Insufficient credits" as an error (it's expected when credits === 0)
+        if (error instanceof Error && error.message !== 'Insufficient credits') {
+          console.error('[CLIENT] Error placing dot:', error)
+        }
         next.reject(error)
         setInFlightCount(prev => prev - 1)
       } finally {
@@ -418,14 +401,21 @@ export default function Home() {
   }, [pendingPlacements, inFlightCount, serverSession, isRevealed])
 
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!serverSession || !canvasRef.current) {
+    if (!serverSession || !canvasRef.current || isRevealing) {
       return
     }
 
-    // Gate clicks: if in blind phase, check remaining dots (purely derived)
+    // Strict state machine: gate clicks based on phase
     if (!isRevealed) {
+      // Blind phase: only allow if remaining dots > 0
       if (remainingDots === 0) {
         // Silently ignore - no dots remaining
+        return
+      }
+    } else {
+      // Revealed phase: only allow if credits > 0
+      if (serverSession.credits <= 0) {
+        // Silently ignore - no credits
         return
       }
     }
@@ -440,7 +430,7 @@ export default function Home() {
     // Generate client dot ID for idempotency
     const clientDotId = crypto.randomUUID()
 
-    // Determine phase at enqueue time (not computed later)
+    // Determine phase at enqueue time (not computed later) - based on current state
     const requestPhase: 'blind' | 'paid' = isRevealed ? 'paid' : 'blind'
 
     // Optimistic UI: immediately append dot to localDots (only in blind phase)
@@ -485,13 +475,87 @@ export default function Home() {
     })
   }
 
+  // Reveal sequence: POST /api/session/reveal → GET /api/session/get → GET /api/dots/all
+  const triggerReveal = async (sessionId: string) => {
+    if (isRevealing) {
+      console.log('[CLIENT] Reveal already in progress, skipping')
+      return
+    }
+
+    setIsRevealing(true)
+    try {
+      // Step 1: POST /api/session/reveal
+      const revealResponse = await fetch('/api/session/reveal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId })
+      })
+
+      if (!revealResponse.ok) {
+        const revealData = await revealResponse.json()
+        console.error('[CLIENT] Reveal failed:', revealData.error)
+        setIsRevealing(false)
+        return
+      }
+
+      // Step 2: GET /api/session/get to refresh session state
+      const sessionResponse = await fetch(`/api/session/get?sessionId=${sessionId}`)
+      const sessionData = await sessionResponse.json()
+
+      if (!sessionResponse.ok) {
+        console.error('[CLIENT] Failed to refresh session after reveal:', sessionData.error)
+        setIsRevealing(false)
+        return
+      }
+
+      // Update session state
+      const refreshedSession: Session = {
+        sessionId: sessionData.sessionId,
+        colorName: sessionData.colorName,
+        colorHex: sessionData.colorHex,
+        blindDotsUsed: sessionData.blindDotsUsed,
+        revealed: sessionData.revealed,
+        credits: sessionData.credits
+      }
+
+      setServerSession(refreshedSession)
+      setIsRevealed(refreshedSession.revealed)
+      localStorage.setItem('dotSession', JSON.stringify(refreshedSession))
+
+      // Step 3: Only after revealed is confirmed true, fetch all dots
+      if (refreshedSession.revealed) {
+        await fetchAllDots(sessionId)
+      }
+    } catch (error) {
+      console.error('[CLIENT] Error in reveal sequence:', error)
+    } finally {
+      setIsRevealing(false)
+    }
+  }
+
   const fetchAllDots = async (sessionId: string) => {
     try {
       const response = await fetch(`/api/dots/all?sessionId=${sessionId}`)
       const data = await response.json()
 
       if (!response.ok) {
-        console.error('Error fetching dots:', data.error)
+        // If 403, session might not be revealed yet - retry after fetching session state
+        if (response.status === 403) {
+          console.log('[CLIENT] 403 from /api/dots/all, fetching session state and retrying')
+          const sessionResponse = await fetch(`/api/session/get?sessionId=${sessionId}`)
+          const sessionData = await sessionResponse.json()
+          
+          if (sessionResponse.ok && sessionData.revealed) {
+            // Retry fetching dots
+            const retryResponse = await fetch(`/api/dots/all?sessionId=${sessionId}`)
+            const retryData = await retryResponse.json()
+            if (retryResponse.ok) {
+              setRevealedDots(retryData)
+            }
+          }
+        } else {
+          console.error('Error fetching dots:', data.error)
+        }
         return
       }
 
