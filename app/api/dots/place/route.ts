@@ -14,6 +14,10 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    // Validate and clamp coordinates to [0,1]
+    const xNorm = Math.max(0, Math.min(1, x))
+    const yNorm = Math.max(0, Math.min(1, y))
+
     // Fetch session
     const { data: session, error: sessionError } = await supabaseAdmin
       .from('sessions')
@@ -37,14 +41,14 @@ export async function POST(request: NextRequest) {
         )
       }
 
-      // Insert blind dot
+      // Insert blind dot with normalized coordinates
       const { error: dotError } = await supabaseAdmin
         .from('dots')
         .insert({
           id: uuidv4(),
           session_id: sessionId,
-          x,
-          y,
+          x: xNorm,
+          y: yNorm,
           color_hex: normalizeHex(session.color_hex),
           phase: 'blind'
         })
@@ -97,14 +101,14 @@ export async function POST(request: NextRequest) {
         )
       }
 
-      // Insert paid dot
+      // Insert paid dot with normalized coordinates
       const { error: dotError } = await supabaseAdmin
         .from('dots')
         .insert({
           id: uuidv4(),
           session_id: sessionId,
-          x,
-          y,
+          x: xNorm,
+          y: yNorm,
           color_hex: normalizeHex(session.color_hex),
           phase: 'paid'
         })

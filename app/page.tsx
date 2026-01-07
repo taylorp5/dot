@@ -29,7 +29,22 @@ export default function Home() {
   const [isLoadingPurchase, setIsLoadingPurchase] = useState(false)
   const [isSelectingColor, setIsSelectingColor] = useState(false)
   const [showPurchaseModal, setShowPurchaseModal] = useState(false)
+  const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 })
   const canvasRef = useRef<HTMLDivElement>(null)
+
+  // Update canvas size on mount and resize
+  useEffect(() => {
+    const updateCanvasSize = () => {
+      if (canvasRef.current) {
+        const rect = canvasRef.current.getBoundingClientRect()
+        setCanvasSize({ width: rect.width, height: rect.height })
+      }
+    }
+
+    updateCanvasSize()
+    window.addEventListener('resize', updateCanvasSize)
+    return () => window.removeEventListener('resize', updateCanvasSize)
+  }, [])
 
   // Load session from localStorage on mount
   useEffect(() => {
@@ -115,8 +130,13 @@ export default function Home() {
     if (!session || !canvasRef.current) return
 
     const rect = canvasRef.current.getBoundingClientRect()
-    const x = ((e.clientX - rect.left) / rect.width) * 100
-    const y = ((e.clientY - rect.top) / rect.height) * 100
+    // Compute normalized coordinates [0,1]
+    let xNorm = (e.clientX - rect.left) / rect.width
+    let yNorm = (e.clientY - rect.top) / rect.height
+    
+    // Clamp to [0,1]
+    xNorm = Math.max(0, Math.min(1, xNorm))
+    yNorm = Math.max(0, Math.min(1, yNorm))
 
     try {
       const response = await fetch('/api/dots/place', {
@@ -124,8 +144,8 @@ export default function Home() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           sessionId: session.sessionId,
-          x,
-          y
+          x: xNorm,
+          y: yNorm
         })
       })
 
@@ -157,8 +177,8 @@ export default function Home() {
       } else if (!updatedSession.revealed) {
         // Still in blind phase - only show our own dots
         setDots(prev => [...prev, {
-          x,
-          y,
+          x: xNorm,
+          y: yNorm,
           color_hex: updatedSession.colorHex,
           phase: 'blind',
           created_at: new Date().toISOString()
@@ -350,17 +370,23 @@ export default function Home() {
           className={styles.canvas}
           onClick={placeDot}
         >
-          {dots.map((dot, idx) => (
-            <div
-              key={idx}
-              className={styles.dot}
-              style={{
-                left: `${dot.x}%`,
-                top: `${dot.y}%`,
-                backgroundColor: dot.color_hex
-              }}
-            />
-          ))}
+          {canvasSize.width > 0 && canvasSize.height > 0 && dots.map((dot, idx) => {
+            // Convert normalized coordinates [0,1] to pixel positions
+            const px = dot.x * canvasSize.width
+            const py = dot.y * canvasSize.height
+            
+            return (
+              <div
+                key={idx}
+                className={styles.dot}
+                style={{
+                  left: `${px}px`,
+                  top: `${py}px`,
+                  backgroundColor: dot.color_hex
+                }}
+              />
+            )
+          })}
         </div>
       )}
     </>
