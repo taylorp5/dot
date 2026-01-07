@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase-server'
-import { COLOR_POOLS, normalizeHex } from '@/lib/color-pools'
+import { ALLOWED_COLORS, getAvailableHex, normalizeHex } from '@/lib/color-pools'
 import { v4 as uuidv4 } from 'uuid'
 
 export async function POST(request: NextRequest) {
@@ -14,41 +14,103 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // 1. Normalize colorName via trim()
-    const normalizedColorName = colorName.trim()
+    // Canonicalize color name: trim and lowercase
+    const canonical = String(colorName).trim().toLowerCase()
 
-    // Get the full hex pool for this color name
-    const hexPool = COLOR_POOLS[normalizedColorName]
-    if (!hexPool || hexPool.length === 0) {
+    // Validate against ALLOWED_COLORS
+    if (!ALLOWED_COLORS.includes(canonical as typeof ALLOWED_COLORS[number])) {
       return NextResponse.json(
-        { error: 'Invalid color name' },
+        { 
+          error: 'Invalid color name',
+          allowedColors: ALLOWED_COLORS,
+          received: colorName
+        },
         { status: 400 }
       )
     }
 
-    // Normalize all hex values in the pool
-    const normalizedPool = hexPool.map(normalizeHex).filter(Boolean)
+    // Fetch all used hexes from database and normalize them
+    const { data: existingSessions, error: fetchError } = await supabaseAdmin
+      .from('sessions')
+      .select('color_hex')
 
-    if (normalizedPool.length === 0) {
+    if (fetchError) {
+      console.error('Error fetching existing sessions:', fetchError)
       return NextResponse.json(
-        { error: 'Color pool is empty' },
+        { error: 'Failed to check available colors' },
+        { status: 500 }
+      )
+    }
+
+    // Normalize used hexes before passing to getAvailableHex
+    const usedHexes = (existingSessions || [])
+      .map(s => normalizeHex(s.color_hex))
+      .filter(Boolean)
+
+    // Get available hex using the helper function
+    const availableHex = getAvailableHex(canonical, usedHexes)
+
+    if (!availableHex) {
+      return NextResponse.json(
+        { error: 'That color is full, pick another.' },
         { status: 400 }
       )
     }
 
-    // 2. Iterate through candidates and attempt insert with retry on unique constraint violations
+    // Attempt to insert session with the available hex
     const sessionId = uuidv4()
-    let lastError: any = null
+    const { data: session, error: insertError } = await supabaseAdmin
+      .from('sessions')
+      .insert({
+        session_id: sessionId,
+        color_name: canonical, // Store canonical lowercase name
+        color_hex: availableHex, // Already normalized
+        blind_dots_used: 0,
+        revealed: false,
+        credits: 0
+      })
+      .select()
+      .single()
 
-    for (const candidateHex of normalizedPool) {
-      try {
-        // Attempt to insert session with this hex
-        const { data: session, error: insertError } = await supabaseAdmin
+    if (insertError) {
+      // Check if it's a unique constraint violation
+      const errorCode = insertError.code
+      const errorMessage = insertError.message || ''
+      
+      const isUniqueViolation = 
+        errorCode === '23505' || 
+        errorCode === 'PGRST116' ||
+        errorMessage.toLowerCase().includes('unique') ||
+        errorMessage.toLowerCase().includes('duplicate') ||
+        errorMessage.includes('color_hex')
+
+      if (isUniqueViolation) {
+        // Race condition: hex was taken between our check and insert
+        // Retry with updated used hexes
+        const { data: updatedSessions } = await supabaseAdmin
+          .from('sessions')
+          .select('color_hex')
+        
+        const updatedUsedHexes = (updatedSessions || [])
+          .map(s => normalizeHex(s.color_hex))
+          .filter(Boolean)
+        
+        const retryHex = getAvailableHex(canonical, updatedUsedHexes)
+        
+        if (!retryHex) {
+          return NextResponse.json(
+            { error: 'That color is full, pick another.' },
+            { status: 400 }
+          )
+        }
+
+        // Retry insert with new hex
+        const { data: retrySession, error: retryError } = await supabaseAdmin
           .from('sessions')
           .insert({
-            session_id: sessionId,
-            color_name: normalizedColorName,
-            color_hex: candidateHex, // Already normalized
+            session_id: uuidv4(),
+            color_name: canonical,
+            color_hex: retryHex,
             blind_dots_used: 0,
             revealed: false,
             credits: 0
@@ -56,76 +118,41 @@ export async function POST(request: NextRequest) {
           .select()
           .single()
 
-        if (insertError) {
-          // Check if it's a unique constraint violation (Postgres error code 23505)
-          // Supabase/PostgREST returns error codes in different formats
-          const errorCode = insertError.code
-          const errorMessage = insertError.message || ''
-          
-          // Check for unique constraint violation
-          // Postgres code 23505, or Supabase might return it as '23505' or 'PGRST116'
-          // Also check if message contains 'unique' or 'duplicate'
-          const isUniqueViolation = 
-            errorCode === '23505' || 
-            errorCode === 'PGRST116' ||
-            errorMessage.toLowerCase().includes('unique') ||
-            errorMessage.toLowerCase().includes('duplicate') ||
-            errorMessage.includes('color_hex')
-
-          if (isUniqueViolation) {
-            // This hex is taken, try next one
-            lastError = insertError
-            continue
-          } else {
-            // Some other error occurred
-            console.error('Error creating session (non-unique):', insertError)
-            return NextResponse.json(
-              { error: 'Failed to create session', details: insertError.message },
-              { status: 500 }
-            )
-          }
-        }
-
-        // Insert succeeded!
-        return NextResponse.json({
-          sessionId: session.session_id,
-          colorName: session.color_name,
-          colorHex: session.color_hex,
-          blindDotsUsed: session.blind_dots_used,
-          revealed: session.revealed,
-          credits: session.credits
-        })
-      } catch (error: any) {
-        // Catch any unexpected errors during insert attempt
-        const errorMessage = error?.message || String(error)
-        const errorCode = error?.code
-
-        // Check for unique constraint violation
-        const isUniqueViolation = 
-          errorCode === '23505' ||
-          errorCode === 'PGRST116' ||
-          errorMessage.toLowerCase().includes('unique') ||
-          errorMessage.toLowerCase().includes('duplicate')
-
-        if (isUniqueViolation) {
-          lastError = error
-          continue
-        } else {
-          console.error('Unexpected error during session creation:', error)
+        if (retryError || !retrySession) {
+          console.error('Error creating session on retry:', retryError)
           return NextResponse.json(
-            { error: 'Failed to create session', details: errorMessage },
+            { error: 'Failed to create session', details: retryError?.message },
             { status: 500 }
           )
         }
+
+        return NextResponse.json({
+          sessionId: retrySession.session_id,
+          colorName: retrySession.color_name,
+          colorHex: retrySession.color_hex,
+          blindDotsUsed: retrySession.blind_dots_used,
+          revealed: retrySession.revealed,
+          credits: retrySession.credits
+        })
+      } else {
+        // Some other error occurred
+        console.error('Error creating session (non-unique):', insertError)
+        return NextResponse.json(
+          { error: 'Failed to create session', details: insertError.message },
+          { status: 500 }
+        )
       }
     }
 
-    // All candidates exhausted
-    console.error('All hex candidates exhausted for color:', normalizedColorName)
-    return NextResponse.json(
-      { error: 'That color is full, pick another.' },
-      { status: 400 }
-    )
+    // Insert succeeded!
+    return NextResponse.json({
+      sessionId: session.session_id,
+      colorName: session.color_name,
+      colorHex: session.color_hex,
+      blindDotsUsed: session.blind_dots_used,
+      revealed: session.revealed,
+      credits: session.credits
+    })
   } catch (error) {
     console.error('Error in session init:', error)
     return NextResponse.json(

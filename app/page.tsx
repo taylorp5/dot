@@ -415,15 +415,15 @@ export default function Home() {
           <div className={styles.modal}>
             <h2 className={styles.modalTitle}>Choose your color</h2>
             <div className={styles.swatchGrid}>
-              {COLOR_SWATCHES.map((swatch) => (
-                <button
-                  key={swatch.name}
-                  className={styles.swatch}
-                  onClick={() => initSession(swatch.name)}
-                  style={{ backgroundColor: swatch.hex }}
-                  aria-label={swatch.name}
-                />
-              ))}
+                  {COLOR_SWATCHES.map((swatch) => (
+                    <button
+                      key={swatch.name}
+                      className={styles.swatch}
+                      onClick={() => initSession(swatch.name.toLowerCase())}
+                      style={{ backgroundColor: swatch.hex }}
+                      aria-label={swatch.name}
+                    />
+                  ))}
             </div>
           </div>
         </div>
@@ -445,7 +445,7 @@ export default function Home() {
           />
           <div className={styles.badgeContent}>
             <span className={styles.badgeText}>
-              {session.colorName} — {session.colorHex.toUpperCase()}
+              {session.colorName.charAt(0).toUpperCase() + session.colorName.slice(1)} — {session.colorHex.toUpperCase()}
             </span>
             {!isRevealed && (
               <span className={styles.badgeSubtext}>
