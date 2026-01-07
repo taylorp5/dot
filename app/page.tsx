@@ -44,11 +44,14 @@ export default function Home() {
   const [showPurchaseModal, setShowPurchaseModal] = useState(false)
   const [pendingPlacements, setPendingPlacements] = useState<PendingDotPlacement[]>([])
   const [inFlightCount, setInFlightCount] = useState(0)
-  const [pendingBlind, setPendingBlind] = useState(0) // Count of in-flight blind dot requests
+  const [pendingBlindIds, setPendingBlindIds] = useState<Set<string>>(new Set()) // Set of in-flight blind dot clientDotIds
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const canvasContainerRef = useRef<HTMLDivElement>(null)
   
   const MAX_IN_FLIGHT = 3
+  
+  // Derived: size of pending blind dots set
+  const pendingBlindSize = pendingBlindIds.size
   
   // Alias for backward compatibility
   const session = serverSession
@@ -248,9 +251,9 @@ export default function Home() {
     }
   }
 
-  // Calculate remaining dots: derived from serverSession + pendingBlind (computed every render)
+  // Calculate remaining dots: purely derived from serverSession + pendingBlindSize (computed every render)
   const remainingDots = serverSession && !isRevealed
-    ? Math.max(0, 10 - serverSession.blindDotsUsed - pendingBlind)
+    ? Math.max(0, 10 - serverSession.blindDotsUsed - pendingBlindSize)
     : 0
 
   // Process queue: execute up to MAX_IN_FLIGHT concurrent requests
@@ -266,9 +269,6 @@ export default function Home() {
       const isBlindRequest = !isRevealed
       
       setInFlightCount(prev => prev + 1)
-      if (isBlindRequest) {
-        setPendingBlind(prev => prev + 1)
-      }
       setPendingPlacements(prev => prev.slice(1))
 
       try {
@@ -287,11 +287,6 @@ export default function Home() {
 
         const data = await response.json()
 
-        // Reconcile: decrement pendingBlind after response
-        if (isBlindRequest) {
-          setPendingBlind(prev => Math.max(0, prev - 1))
-        }
-
         if (!response.ok) {
           // Handle NO_FREE_DOTS error
           if (response.status === 409 && data.error === 'NO_FREE_DOTS') {
@@ -307,7 +302,15 @@ export default function Home() {
                 revealed: data.session.revealed,
                 credits: data.session.credits
               }
-              setServerSession(updatedSession)
+              
+              // Prevent out-of-order overwrites: only accept if blindDotsUsed >= current
+              setServerSession(prev => {
+                if (!prev || updatedSession.blindDotsUsed >= prev.blindDotsUsed) {
+                  return updatedSession
+                }
+                return prev
+              })
+              
               setIsRevealed(updatedSession.revealed)
               localStorage.setItem('dotSession', JSON.stringify(updatedSession))
 
@@ -354,7 +357,14 @@ export default function Home() {
           credits: data.credits
         }
 
-        setServerSession(updatedSession)
+        // Prevent out-of-order overwrites: only accept if blindDotsUsed >= current
+        setServerSession(prev => {
+          if (!prev || updatedSession.blindDotsUsed >= prev.blindDotsUsed) {
+            return updatedSession
+          }
+          return prev
+        })
+        
         setIsRevealed(updatedSession.revealed)
         localStorage.setItem('dotSession', JSON.stringify(updatedSession))
 
@@ -369,13 +379,21 @@ export default function Home() {
         setInFlightCount(prev => prev - 1)
       } catch (error) {
         // Remove optimistic dot on error
-        if (isBlindRequest) {
-          setPendingBlind(prev => Math.max(0, prev - 1))
+        if (!isRevealed) {
           setLocalDots(prev => prev.filter(dot => dot.clientDotId !== next.clientDotId))
         }
         console.error('[CLIENT] Error placing dot:', error)
         next.reject(error)
         setInFlightCount(prev => prev - 1)
+      } finally {
+        // Remove pending ID in finally block (exactly once per request)
+        if (isBlindRequest) {
+          setPendingBlindIds(prev => {
+            const nextSet = new Set(prev)
+            nextSet.delete(next.clientDotId)
+            return nextSet
+          })
+        }
       }
     }
 
@@ -387,12 +405,9 @@ export default function Home() {
       return
     }
 
-    // Gate clicks: if in blind phase, check remaining dots
+    // Gate clicks: if in blind phase, check remaining dots (purely derived)
     if (!isRevealed) {
-      // Compute remaining from serverSession + pendingBlind (derived, not state)
-      const computedRemaining = Math.max(0, 10 - serverSession.blindDotsUsed - pendingBlind)
-      
-      if (computedRemaining === 0) {
+      if (remainingDots === 0) {
         // Silently ignore - no dots remaining
         return
       }
@@ -420,9 +435,12 @@ export default function Home() {
         clientDotId
       }
       setLocalDots(prev => [...prev, optimisticDot])
+      
+      // Add pending ID immediately when enqueuing (exactly once)
+      setPendingBlindIds(prev => new Set(prev).add(clientDotId))
     }
 
-    // Queue the request (pendingBlind will be incremented when request starts processing)
+    // Queue the request
     const placementPromise = new Promise<Session>((resolve, reject) => {
       setPendingPlacements(prev => [...prev, {
         clientDotId,
