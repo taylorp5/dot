@@ -5,7 +5,7 @@ import { v4 as uuidv4 } from 'uuid'
 
 export async function POST(request: NextRequest) {
   try {
-    const { sessionId, x, y, clientW, clientH } = await request.json()
+    const { sessionId, x, y } = await request.json()
 
     if (!sessionId || typeof x !== 'number' || typeof y !== 'number') {
       return NextResponse.json(
@@ -14,18 +14,13 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // PERMANENT FIX: Reject coordinates outside [0,1] instead of clamping
-    // This prevents pixel coordinates from entering the database
+    // Validate x, y are numbers in [0,1]
     if (x < 0 || x > 1 || y < 0 || y > 1) {
       return NextResponse.json(
         { error: 'Invalid coordinates: x and y must be in range [0,1]' },
         { status: 400 }
       )
     }
-
-    // Coordinates are already normalized [0,1]
-    const xNorm = x
-    const yNorm = y
 
     // Fetch session
     const { data: session, error: sessionError } = await supabaseAdmin
@@ -42,22 +37,13 @@ export async function POST(request: NextRequest) {
     }
 
     if (!session.revealed) {
-      // Blind phase - enforce 10 dot limit
-      console.log('[SERVER] Blind phase placement:', {
-        sessionId,
-        blind_dots_used_before: session.blind_dots_used,
-        x: xNorm,
-        y: yNorm
-      })
-
+      // Blind phase
       if (session.blind_dots_used >= 10) {
-        console.log('[SERVER] Rejecting: blind_dots_used >= 10')
         return NextResponse.json(
           { 
             error: 'NO_FREE_DOTS',
             session: {
               sessionId: session.session_id,
-              colorName: session.color_name,
               colorHex: session.color_hex,
               blindDotsUsed: session.blind_dots_used,
               revealed: session.revealed,
@@ -68,35 +54,30 @@ export async function POST(request: NextRequest) {
         )
       }
 
-      // Insert blind dot with normalized coordinates
+      // Insert dot phase='blind' with session.color_hex
       const dotId = uuidv4()
-      const { data: insertedDot, error: dotError } = await supabaseAdmin
+      const { error: dotError } = await supabaseAdmin
         .from('dots')
         .insert({
           id: dotId,
           session_id: sessionId,
-          x: xNorm,
-          y: yNorm,
+          x: x,
+          y: y,
           color_hex: normalizeHex(session.color_hex),
-          phase: 'blind',
-          client_w: typeof clientW === 'number' ? clientW : null,
-          client_h: typeof clientH === 'number' ? clientH : null
+          phase: 'blind'
         })
-        .select()
-        .single()
 
       if (dotError) {
-        console.error('[SERVER] Error inserting dot:', dotError)
+        console.error('Error inserting dot:', dotError)
         return NextResponse.json(
           { error: 'Failed to place dot' },
           { status: 500 }
         )
       }
 
-      console.log('[SERVER] Dot inserted successfully:', { dotId })
-
-      // Atomically increment blind_dots_used and auto-reveal if needed
+      // Increment blind_dots_used by 1
       const newBlindDotsUsed = session.blind_dots_used + 1
+      // If new blind_dots_used >= 10 set revealed=true
       const shouldReveal = newBlindDotsUsed >= 10
 
       const { data: updatedSession, error: updateError } = await supabaseAdmin
@@ -110,48 +91,51 @@ export async function POST(request: NextRequest) {
         .single()
 
       if (updateError) {
-        console.error('[SERVER] Error updating session:', updateError)
+        console.error('Error updating session:', updateError)
         return NextResponse.json(
           { error: 'Failed to update session' },
           { status: 500 }
         )
       }
 
-      console.log('[SERVER] Session updated:', {
-        sessionId,
-        blind_dots_used_after: updatedSession.blind_dots_used,
-        revealed: updatedSession.revealed
-      })
-
+      // Return { session: DTO }
       return NextResponse.json({
-        sessionId: updatedSession.session_id,
-        colorName: updatedSession.color_name,
-        colorHex: updatedSession.color_hex,
-        blindDotsUsed: updatedSession.blind_dots_used,
-        revealed: updatedSession.revealed,
-        credits: updatedSession.credits
+        session: {
+          sessionId: updatedSession.session_id,
+          colorHex: updatedSession.color_hex,
+          blindDotsUsed: updatedSession.blind_dots_used,
+          revealed: updatedSession.revealed,
+          credits: updatedSession.credits
+        }
       })
     } else {
-      // Revealed phase - requires credits
+      // Revealed phase
       if (session.credits <= 0) {
         return NextResponse.json(
-          { error: 'Insufficient credits' },
+          { 
+            error: 'INSUFFICIENT_CREDITS',
+            session: {
+              sessionId: session.session_id,
+              colorHex: session.color_hex,
+              blindDotsUsed: session.blind_dots_used,
+              revealed: session.revealed,
+              credits: session.credits
+            }
+          },
           { status: 400 }
         )
       }
 
-      // Insert paid dot with normalized coordinates
+      // Insert dot phase='paid'
       const { error: dotError } = await supabaseAdmin
         .from('dots')
         .insert({
           id: uuidv4(),
           session_id: sessionId,
-          x: xNorm,
-          y: yNorm,
+          x: x,
+          y: y,
           color_hex: normalizeHex(session.color_hex),
-          phase: 'paid',
-          client_w: typeof clientW === 'number' ? clientW : null,
-          client_h: typeof clientH === 'number' ? clientH : null
+          phase: 'paid'
         })
 
       if (dotError) {
@@ -162,7 +146,7 @@ export async function POST(request: NextRequest) {
         )
       }
 
-      // Decrement credits
+      // Decrement credits by 1
       const { data: updatedSession, error: updateError } = await supabaseAdmin
         .from('sessions')
         .update({
@@ -180,13 +164,15 @@ export async function POST(request: NextRequest) {
         )
       }
 
+      // Return { session: DTO }
       return NextResponse.json({
-        sessionId: updatedSession.session_id,
-        colorName: updatedSession.color_name,
-        colorHex: updatedSession.color_hex,
-        blindDotsUsed: updatedSession.blind_dots_used,
-        revealed: updatedSession.revealed,
-        credits: updatedSession.credits
+        session: {
+          sessionId: updatedSession.session_id,
+          colorHex: updatedSession.color_hex,
+          blindDotsUsed: updatedSession.blind_dots_used,
+          revealed: updatedSession.revealed,
+          credits: updatedSession.credits
+        }
       })
     }
   } catch (error) {

@@ -126,7 +126,6 @@ export async function POST(request: NextRequest) {
         // Insert succeeded!
         return NextResponse.json({
           sessionId: session.session_id,
-          colorName: session.color_name, // Return canonical name (can be converted to Title Case in frontend if needed)
           colorHex: session.color_hex,
           blindDotsUsed: session.blind_dots_used,
           revealed: session.revealed,
