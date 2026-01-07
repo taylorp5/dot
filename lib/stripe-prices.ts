@@ -13,15 +13,24 @@
 // - NEXT_PUBLIC_STRIPE_PRICE_ID_50
 // - NEXT_PUBLIC_STRIPE_PRICE_ID_100
 // - NEXT_PUBLIC_STRIPE_PRICE_ID_500
+//
+// Helper function to get price ID, using fallback if env var is placeholder or missing
+function getPriceId(envVar: string | undefined, fallback: string): string {
+  if (!envVar || envVar.includes('xxxxxxxxxxxxx') || envVar.includes('your_')) {
+    return fallback
+  }
+  return envVar
+}
+
 export const STRIPE_PRICES = {
   // 50 credits = $0.50 (minimum Stripe charge)
-  CREDITS_50: process.env.NEXT_PUBLIC_STRIPE_PRICE_ID_50 || 'price_xxxxxxxxxxxxx',
+  CREDITS_50: getPriceId(process.env.NEXT_PUBLIC_STRIPE_PRICE_ID_50, 'price_1Sn1C7AdMCorYy8cMTZ7KpGT'),
   
   // 100 credits = $1.00
-  CREDITS_100: process.env.NEXT_PUBLIC_STRIPE_PRICE_ID_100 || 'price_1Smz1oAdMCorYy8cG9yElTiy',
+  CREDITS_100: getPriceId(process.env.NEXT_PUBLIC_STRIPE_PRICE_ID_100, 'price_1Smz1oAdMCorYy8cG9yElTiy'),
   
   // 500 credits = $5.00
-  CREDITS_500: process.env.NEXT_PUBLIC_STRIPE_PRICE_ID_500 || 'price_1Smz1yAdMCorYy8ce9wACrLH',
+  CREDITS_500: getPriceId(process.env.NEXT_PUBLIC_STRIPE_PRICE_ID_500, 'price_1Smz1yAdMCorYy8ce9wACrLH'),
 } as const
 
 // Map price IDs to credit amounts
