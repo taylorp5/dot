@@ -86,16 +86,19 @@ export default function Home() {
     ctx.clearRect(0, 0, cssW, cssH)
 
     // Determine which dots to draw
+    // When revealed: use revealedDots (ALL dots from server, including current user's)
+    // When blind: use localDots (only current user's optimistic dots)
     const dotsToDraw = isRevealed ? revealedDots : localDots
 
-    // Draw all dots
+    // Draw all dots using normalized coordinates and camelCase field names
     dotsToDraw.forEach((dot) => {
+      // Convert normalized [0,1] coordinates to pixel positions
       const px = dot.x * cssW
       const py = dot.y * cssH
 
       ctx.beginPath()
       ctx.arc(px, py, 3, 0, Math.PI * 2)
-      ctx.fillStyle = dot.colorHex
+      ctx.fillStyle = dot.colorHex // Use camelCase colorHex field
       ctx.fill()
     })
   }
@@ -342,6 +345,8 @@ export default function Home() {
         return
       }
 
+      // IMPORTANT: Do NOT filter dots by sessionId - we want ALL dots including the current user's
+      // The filter below is ONLY for logging/counting purposes
       const userDotsCount = data.filter((dot: Dot) => dot.sessionId === sessionId).length
       
       console.log('[CLIENT] Fetched dots:', {
@@ -363,6 +368,7 @@ export default function Home() {
         return fetchAllDots(sessionId, retryCount + 1)
       }
 
+      // Set ALL dots without any filtering - includes current user's dots and all others
       setRevealedDots(data)
     } catch (error) {
       console.error('[CLIENT] Error fetching all dots:', error)

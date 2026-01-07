@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase-server'
+import { normalizeHex } from '@/lib/color-pools'
 
 export const dynamic = 'force-dynamic'
 
@@ -53,11 +54,12 @@ export async function GET(request: NextRequest) {
     }
 
     // Map to camelCase DTO for stable frontend interface
+    // Normalize colorHex to ensure consistency
     const dotDTOs = (dots || []).map((dot) => ({
       sessionId: dot.session_id,
       x: dot.x,
       y: dot.y,
-      colorHex: dot.color_hex,
+      colorHex: normalizeHex(dot.color_hex), // Normalize hex for consistency
       phase: dot.phase,
       createdAt: dot.created_at
     }))
