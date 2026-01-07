@@ -15,11 +15,12 @@ interface Session {
 }
 
 interface Dot {
+  sessionId: string
   x: number
   y: number
-  color_hex: string
+  colorHex: string
   phase: 'blind' | 'paid'
-  created_at: string
+  createdAt: string
 }
 
 export default function Home() {
@@ -94,7 +95,7 @@ export default function Home() {
 
       ctx.beginPath()
       ctx.arc(px, py, 3, 0, Math.PI * 2)
-      ctx.fillStyle = dot.color_hex
+      ctx.fillStyle = dot.colorHex
       ctx.fill()
     })
   }
@@ -223,11 +224,12 @@ export default function Home() {
 
     // Optimistic UI: Add dot immediately to localDots (only in blind phase)
     const optimisticDot: Dot = {
+      sessionId: session.sessionId,
       x: xNorm,
       y: yNorm,
-      color_hex: session.colorHex,
+      colorHex: session.colorHex,
       phase: 'blind',
-      created_at: new Date().toISOString()
+      createdAt: new Date().toISOString()
     }
 
     if (!isRevealed) {

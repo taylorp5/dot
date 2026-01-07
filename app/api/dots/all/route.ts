@@ -41,7 +41,7 @@ export async function GET(request: NextRequest) {
     // This ensures user's blind dots appear on reveal
     const { data: dots, error: dotsError } = await supabaseAdmin
       .from('dots')
-      .select('x, y, color_hex, phase, created_at')
+      .select('session_id, x, y, color_hex, phase, created_at')
       .order('created_at', { ascending: true })
 
     if (dotsError) {
@@ -52,7 +52,17 @@ export async function GET(request: NextRequest) {
       )
     }
 
-    return NextResponse.json(dots || [])
+    // Map to camelCase DTO for stable frontend interface
+    const dotDTOs = (dots || []).map((dot) => ({
+      sessionId: dot.session_id,
+      x: dot.x,
+      y: dot.y,
+      colorHex: dot.color_hex,
+      phase: dot.phase,
+      createdAt: dot.created_at
+    }))
+
+    return NextResponse.json(dotDTOs)
   } catch (error) {
     console.error('Error in dots all:', error)
     return NextResponse.json(
