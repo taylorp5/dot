@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase-server'
+import { normalizeHex } from '@/lib/color-pools'
 import { v4 as uuidv4 } from 'uuid'
 
 export async function POST(request: NextRequest) {
@@ -44,7 +45,7 @@ export async function POST(request: NextRequest) {
           session_id: sessionId,
           x,
           y,
-          color_hex: session.color_hex,
+          color_hex: normalizeHex(session.color_hex),
           phase: 'blind'
         })
 
@@ -104,7 +105,7 @@ export async function POST(request: NextRequest) {
           session_id: sessionId,
           x,
           y,
-          color_hex: session.color_hex,
+          color_hex: normalizeHex(session.color_hex),
           phase: 'paid'
         })
 
