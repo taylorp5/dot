@@ -14,19 +14,21 @@ interface Session {
 }
 
 interface Dot {
-  sessionId: string
   x: number
   y: number
   colorHex: string
   phase: 'blind' | 'paid'
-  createdAt: string
+  sessionId?: string
+  clientDotId?: string
+  createdAt?: string
 }
 
 export default function Home() {
   const [session, setSession] = useState<Session | null>(null)
   const [showColorPicker, setShowColorPicker] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
-  const [revealedDots, setRevealedDots] = useState<Dot[]>([])
+  const [myBlindDots, setMyBlindDots] = useState<Dot[]>([]) // Only this session's blind dots
+  const [revealedDots, setRevealedDots] = useState<Dot[]>([]) // All dots after reveal
   const [showBuyPanel, setShowBuyPanel] = useState(false)
   const [isPlacing, setIsPlacing] = useState(false)
   const [isLoadingPurchase, setIsLoadingPurchase] = useState(false)
@@ -71,6 +73,9 @@ export default function Home() {
         
         setSession(hydratedSession)
         
+        // Always fetch user's own dots (for blind mode persistence)
+        fetchMyDots(hydratedSession.sessionId)
+        
         // If revealed, fetch all dots
         if (hydratedSession.revealed) {
           fetchAllDots(hydratedSession.sessionId)
@@ -86,17 +91,11 @@ export default function Home() {
 
   // Monitor session state for reveal trigger
   useEffect(() => {
-    if (session && (session.blindDotsUsed >= 10 || session.revealed)) {
-      if (!session.revealed) {
-        // Session will be updated by the place endpoint, but we need to check again
-        return
-      }
-      // Fetch all dots when revealed
-      if (revealedDots.length === 0) {
-        fetchAllDots(session.sessionId)
-      }
+    if (session && session.revealed && revealedDots.length === 0) {
+      // Fetch all dots exactly once when revealed
+      fetchAllDots(session.sessionId)
     }
-  }, [session?.revealed, session?.blindDotsUsed])
+  }, [session?.revealed])
 
   // Handle Stripe success redirect
   useEffect(() => {
@@ -128,6 +127,31 @@ export default function Home() {
     }
   }, [session])
 
+  const fetchMyDots = async (sessionId: string) => {
+    try {
+      const response = await fetch(`/api/dots/mine?sessionId=${sessionId}`)
+      const data = await response.json()
+
+      if (!response.ok) {
+        console.error('Error fetching my dots:', data.error)
+        return
+      }
+
+      // Map to Dot interface format
+      const dots: Dot[] = data.map((dot: any) => ({
+        x: dot.x,
+        y: dot.y,
+        colorHex: dot.colorHex,
+        phase: dot.phase,
+        createdAt: dot.createdAt
+      }))
+
+      setMyBlindDots(dots)
+    } catch (error) {
+      console.error('Error fetching my dots:', error)
+    }
+  }
+
   const fetchAllDots = async (sessionId: string) => {
     try {
       const response = await fetch(`/api/dots/all?sessionId=${sessionId}`)
@@ -138,7 +162,17 @@ export default function Home() {
         return
       }
 
-      setRevealedDots(data)
+      // Map to Dot interface format
+      const dots: Dot[] = data.map((dot: any) => ({
+        x: dot.x,
+        y: dot.y,
+        colorHex: dot.colorHex,
+        phase: dot.phase,
+        sessionId: dot.sessionId,
+        createdAt: dot.createdAt
+      }))
+
+      setRevealedDots(dots)
     } catch (error) {
       console.error('Error fetching all dots:', error)
     }
@@ -169,6 +203,7 @@ export default function Home() {
       }
 
       setSession(newSession)
+      setMyBlindDots([]) // Clear blind dots for new session
       localStorage.setItem('justadot_session_id', newSession.sessionId)
       setShowColorPicker(false)
     } catch (error) {
@@ -189,7 +224,8 @@ export default function Home() {
 
     // Prevent placement if no dots remaining
     const remainingDots = Math.max(0, 10 - session.blindDotsUsed)
-    if (remainingDots === 0) {
+    if (remainingDots <= 0) {
+      // Ignore silently
       return
     }
 
@@ -202,6 +238,19 @@ export default function Home() {
     const xNorm = Math.max(0, Math.min(1, x))
     const yNorm = Math.max(0, Math.min(1, y))
 
+    // Generate client dot ID for optimistic update
+    const clientDotId = `client-${Date.now()}-${Math.random()}`
+
+    // Immediately add optimistic dot to myBlindDots
+    const optimisticDot: Dot = {
+      x: xNorm,
+      y: yNorm,
+      colorHex: session.colorHex,
+      phase: 'blind',
+      clientDotId: clientDotId
+    }
+    setMyBlindDots(prev => [...prev, optimisticDot])
+
     setIsPlacing(true)
 
     try {
@@ -211,13 +260,17 @@ export default function Home() {
         body: JSON.stringify({
           sessionId: session.sessionId,
           x: xNorm,
-          y: yNorm
+          y: yNorm,
+          clientDotId: clientDotId
         })
       })
 
       const data = await response.json()
 
       if (!response.ok) {
+        // Remove optimistic dot on failure
+        setMyBlindDots(prev => prev.filter(dot => dot.clientDotId !== clientDotId))
+        
         if (response.status === 409 && data.error === 'NO_FREE_DOTS') {
           // Update session from response
           if (data.session) {
@@ -238,7 +291,7 @@ export default function Home() {
         return
       }
 
-      // Update session from response
+      // Update session from response (authoritative)
       if (data.session) {
         const updatedSession: Session = {
           sessionId: data.session.sessionId,
@@ -252,14 +305,19 @@ export default function Home() {
         setSession(updatedSession)
         localStorage.setItem('justadot_session_id', updatedSession.sessionId)
 
-        // If revealed, fetch all dots
+        // If revealed, fetch all dots exactly once
         if (updatedSession.revealed && !session.revealed) {
           await fetchAllDots(updatedSession.sessionId)
+        } else {
+          // Refresh my dots to get server-confirmed version
+          await fetchMyDots(updatedSession.sessionId)
         }
       }
 
       setIsPlacing(false)
     } catch (error) {
+      // Remove optimistic dot on error
+      setMyBlindDots(prev => prev.filter(dot => dot.clientDotId !== clientDotId))
       console.error('Error placing dot:', error)
       alert('Failed to place dot')
       setIsPlacing(false)
@@ -378,7 +436,32 @@ export default function Home() {
         </div>
       )}
 
-      {/* Reveal UI - Full screen off-white div with dots */}
+      {/* Blind Mode UI - Show only user's own dots */}
+      {session && !session.revealed && (
+        <div className="fixed inset-0 z-10" style={{ backgroundColor: 'white' }}>
+          {myBlindDots.map((dot, i) => (
+            <div
+              key={dot.clientDotId || `blind-${i}-${dot.createdAt || ''}`}
+              style={{
+                position: 'absolute',
+                left: `${dot.x * 100}%`,
+                top: `${dot.y * 100}%`,
+                transform: 'translate(-50%, -50%)',
+                width: '12px',
+                height: '12px',
+                borderRadius: '50%',
+                backgroundColor: dot.colorHex,
+                border: '1px solid rgba(0, 0, 0, 0.35)',
+                boxShadow: '0 0 0 1px rgba(255, 255, 255, 0.35)',
+                zIndex: 20,
+                pointerEvents: 'none'
+              }}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* Reveal UI - Full screen off-white div with all dots */}
       {session && session.revealed && (
         <div className="fixed inset-0 z-10" style={{ backgroundColor: '#fafafa' }}>
           {/* Hardcoded Debug Dot */}
@@ -414,10 +497,10 @@ export default function Home() {
             DEBUG DOT
           </div>
           
-          {/* Fetched Dots */}
+          {/* All Revealed Dots */}
           {revealedDots.map((dot, i) => (
             <div
-              key={`${dot.sessionId}-${i}-${dot.createdAt}`}
+              key={`${dot.sessionId || 'unknown'}-${i}-${dot.createdAt || ''}`}
               style={{
                 position: 'absolute',
                 left: `${dot.x * 100}%`,
@@ -438,7 +521,7 @@ export default function Home() {
       )}
 
       {/* Debug Label - Top Left */}
-      {session && session.revealed && revealedDots.length > 0 && (
+      {session && (
         <div style={{
           position: 'fixed',
           top: '16px',
@@ -452,11 +535,22 @@ export default function Home() {
           fontFamily: 'monospace',
           pointerEvents: 'none'
         }}>
-          <div>Reveal dots: {revealedDots.length}</div>
-          {revealedDots[0] && (
-            <div style={{ marginTop: '4px', fontSize: '10px' }}>
-              First: x={revealedDots[0].x.toFixed(3)}, y={revealedDots[0].y.toFixed(3)}, color={revealedDots[0].colorHex}
-            </div>
+          {!session.revealed ? (
+            <>
+              <div>Blind dots: {myBlindDots.length}</div>
+              <div style={{ marginTop: '4px', fontSize: '10px' }}>
+                Dots left: {Math.max(0, 10 - session.blindDotsUsed)}
+              </div>
+            </>
+          ) : (
+            <>
+              <div>Reveal dots: {revealedDots.length}</div>
+              {revealedDots[0] && (
+                <div style={{ marginTop: '4px', fontSize: '10px' }}>
+                  First: x={revealedDots[0].x.toFixed(3)}, y={revealedDots[0].y.toFixed(3)}, color={revealedDots[0].colorHex}
+                </div>
+              )}
+            </>
           )}
         </div>
       )}
@@ -648,13 +742,13 @@ export default function Home() {
         />
       )}
 
-      {/* Clickable White Screen - In reveal mode (behind reveal layer) */}
+      {/* Background - In reveal mode (behind reveal layer) */}
       {session && session.revealed && (
         <div
           style={{
             position: 'fixed',
             inset: 0,
-            backgroundColor: 'white',
+            backgroundColor: '#fafafa',
             width: '100vw',
             height: '100vh',
             zIndex: 0
