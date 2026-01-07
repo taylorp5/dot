@@ -409,6 +409,13 @@ export default function Home() {
       {session && (
         <button 
           className={styles.badge}
+          style={{
+            position: 'fixed',
+            top: '16px',
+            right: '16px',
+            zIndex: 50,
+            pointerEvents: 'auto'
+          }}
           onClick={() => {
             if (isRevealed) {
               setShowPurchaseModal(true)
@@ -469,8 +476,8 @@ export default function Home() {
         </div>
       )}
 
-      {/* Debug Counter */}
-      {session && (
+      {/* Debug Label */}
+      {session && isRevealed && (
         <div
           style={{
             position: 'fixed',
@@ -482,15 +489,44 @@ export default function Home() {
             padding: '8px 12px',
             borderRadius: '8px',
             fontSize: '12px',
-            fontFamily: 'monospace'
+            fontFamily: 'monospace',
+            pointerEvents: 'none'
           }}
         >
-          Rendered: {isRevealed ? revealedDots.length : localDots.length}
+          Reveal dots: {revealedDots.length}
         </div>
       )}
 
-      {/* Full Viewport Canvas */}
-      {session && (
+      {/* Reveal Stage - DOM-based rendering for revealed mode */}
+      {session && isRevealed && (
+        <div
+          id="reveal-stage"
+          className="fixed inset-0 bg-white"
+          style={{ zIndex: 0 }}
+        >
+          {revealedDots.map((dot, i) => {
+            // Handle both colorHex and color_hex field names
+            const color = dot.colorHex ?? (dot as any).color_hex ?? '#000000'
+            return (
+              <div
+                key={`${dot.sessionId}-${i}-${dot.createdAt}`}
+                className="absolute rounded-full"
+                style={{
+                  left: `${dot.x * 100}%`,
+                  top: `${dot.y * 100}%`,
+                  width: '8px',
+                  height: '8px',
+                  transform: 'translate(-50%, -50%)',
+                  backgroundColor: color,
+                }}
+              />
+            )
+          })}
+        </div>
+      )}
+
+      {/* Blind Mode Canvas - only show when NOT revealed */}
+      {session && !isRevealed && (
         <div
           ref={canvasContainerRef}
           onPointerDown={handlePointerDown}
@@ -503,7 +539,7 @@ export default function Home() {
             zIndex: 1
           }}
         >
-          <Canvas dots={isRevealed ? revealedDots : localDots} />
+          <Canvas dots={localDots} />
         </div>
       )}
     </>
