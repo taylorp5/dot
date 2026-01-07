@@ -1,7 +1,6 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
-import { useSearchParams } from 'next/navigation'
 import styles from './page.module.css'
 import { STRIPE_PRICES } from '@/lib/stripe-prices'
 
@@ -29,7 +28,6 @@ export default function Home() {
   const [isRevealed, setIsRevealed] = useState(false)
   const [isLoadingPurchase, setIsLoadingPurchase] = useState(false)
   const canvasRef = useRef<HTMLDivElement>(null)
-  const searchParams = useSearchParams()
 
   // Load session from localStorage on mount
   useEffect(() => {
