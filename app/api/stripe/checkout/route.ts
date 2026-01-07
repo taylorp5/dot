@@ -2,9 +2,21 @@ import { NextRequest, NextResponse } from 'next/server'
 import { stripe } from '@/lib/stripe-server'
 import { STRIPE_PRICES } from '@/lib/stripe-prices'
 
-const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000'
-
 export async function POST(request: NextRequest) {
+  // Build baseUrl with explicit scheme (https://)
+  let baseUrl: string
+  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL
+  const vercelUrl = process.env.VERCEL_URL
+
+  if (siteUrl && (siteUrl.startsWith('http://') || siteUrl.startsWith('https://'))) {
+    baseUrl = siteUrl
+  } else if (vercelUrl) {
+    baseUrl = `https://${vercelUrl}`
+  } else {
+    baseUrl = 'http://localhost:3000'
+  }
+
+  console.log('baseUrl', baseUrl)
   try {
     const { sessionId, priceId } = await request.json()
 
@@ -64,8 +76,8 @@ export async function POST(request: NextRequest) {
             quantity: 1,
           },
         ],
-        success_url: `${siteUrl}/?success=1`,
-        cancel_url: `${siteUrl}/?canceled=1`,
+        success_url: `${baseUrl}/?success=1`,
+        cancel_url: `${baseUrl}/?canceled=1`,
         client_reference_id: sessionId,
         metadata: {
           sessionId: sessionId,
