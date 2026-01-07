@@ -31,19 +31,42 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Fetch session
+    // Add loud server logs (temporary)
+    console.log('[place-batch] sessionId', sessionId, 'dots', dots.length)
+
+    // FIRST: Fetch session row - enforce DB-backed sessions
     const { data: session, error: sessionError } = await supabaseAdmin
       .from('sessions')
-      .select('*')
+      .select('session_id, revealed, blind_dots_used, credits, color_hex')
       .eq('session_id', sessionId)
       .single()
 
-    if (sessionError || !session) {
+    console.log('[place-batch] found session?', !!session)
+
+    // If error: return 500 JSON with supabase error message/details
+    if (sessionError) {
+      console.error('[place-batch] Error fetching session:', sessionError)
       return NextResponse.json(
-        { error: 'Session not found' },
+        { 
+          error: 'Failed to fetch session',
+          details: sessionError.message || String(sessionError),
+          code: sessionError.code || 'UNKNOWN'
+        },
+        { status: 500 }
+      )
+    }
+
+    // If session missing: return 404 JSON with sessionId
+    if (!session) {
+      console.error('[place-batch] Session not found:', sessionId)
+      return NextResponse.json(
+        { error: 'Session not found', sessionId },
         { status: 404 }
       )
     }
+
+    // Ensure NO code path inserts dots without a session
+    // At this point, session is guaranteed to exist
 
     if (!session.revealed) {
       // Blind phase
@@ -55,12 +78,24 @@ export async function POST(request: NextRequest) {
         const shouldReveal = session.blind_dots_used >= 10
         
         if (shouldReveal) {
-          const { data: updatedSession } = await supabaseAdmin
+          const { data: updatedSession, error: updateError } = await supabaseAdmin
             .from('sessions')
             .update({ revealed: true })
             .eq('session_id', sessionId)
-            .select()
+            .select('session_id, revealed, blind_dots_used, credits, color_hex')
             .single()
+
+          if (updateError) {
+            console.error('[place-batch] Error updating session to revealed:', updateError)
+            return NextResponse.json(
+              { 
+                error: 'Failed to update session',
+                details: updateError.message,
+                code: updateError.code
+              },
+              { status: 500 }
+            )
+          }
 
           if (updatedSession) {
             return NextResponse.json(
@@ -68,11 +103,10 @@ export async function POST(request: NextRequest) {
                 error: 'NO_FREE_DOTS',
                 session: {
                   sessionId: updatedSession.session_id,
-                  colorName: updatedSession.color_name,
-                  colorHex: updatedSession.color_hex,
                   blindDotsUsed: updatedSession.blind_dots_used,
                   revealed: updatedSession.revealed,
-                  credits: updatedSession.credits
+                  credits: updatedSession.credits,
+                  colorHex: updatedSession.color_hex
                 },
                 accepted: []
               },
@@ -86,11 +120,10 @@ export async function POST(request: NextRequest) {
             error: 'NO_FREE_DOTS',
             session: {
               sessionId: session.session_id,
-              colorName: session.color_name,
-              colorHex: session.color_hex,
               blindDotsUsed: session.blind_dots_used,
               revealed: session.revealed,
-              credits: session.credits
+              credits: session.credits,
+              colorHex: session.color_hex
             },
             accepted: []
           },
@@ -163,7 +196,7 @@ export async function POST(request: NextRequest) {
           revealed: shouldReveal
         })
         .eq('session_id', sessionId)
-        .select()
+        .select('session_id, revealed, blind_dots_used, credits, color_hex')
         .single()
 
       if (updateError) {
@@ -185,14 +218,14 @@ export async function POST(request: NextRequest) {
         clientDotId: dot.client_dot_id
       }))
 
+      // Always return JSON with session DTO
       return NextResponse.json({
         session: {
           sessionId: updatedSession.session_id,
-          colorName: updatedSession.color_name,
-          colorHex: updatedSession.color_hex,
           blindDotsUsed: updatedSession.blind_dots_used,
           revealed: updatedSession.revealed,
-          credits: updatedSession.credits
+          credits: updatedSession.credits,
+          colorHex: updatedSession.color_hex
         },
         acceptedDots
       })
@@ -206,11 +239,10 @@ export async function POST(request: NextRequest) {
             error: 'INSUFFICIENT_CREDITS',
             session: {
               sessionId: session.session_id,
-              colorName: session.color_name,
-              colorHex: session.color_hex,
               blindDotsUsed: session.blind_dots_used,
               revealed: session.revealed,
-              credits: session.credits
+              credits: session.credits,
+              colorHex: session.color_hex
             }
           },
           { status: 400 }
@@ -277,7 +309,7 @@ export async function POST(request: NextRequest) {
           credits: session.credits - actualInsertedCount
         })
         .eq('session_id', sessionId)
-        .select()
+        .select('session_id, revealed, blind_dots_used, credits, color_hex')
         .single()
 
       if (updateError) {
@@ -301,11 +333,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({
         session: {
           sessionId: updatedSession.session_id,
-          colorName: updatedSession.color_name,
-          colorHex: updatedSession.color_hex,
           blindDotsUsed: updatedSession.blind_dots_used,
           revealed: updatedSession.revealed,
-          credits: updatedSession.credits
+          credits: updatedSession.credits,
+          colorHex: updatedSession.color_hex
         },
         acceptedDots
       })
