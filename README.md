@@ -46,11 +46,17 @@ NEXT_PUBLIC_STRIPE_PRICE_ID_100=price_xxxxxxxxxxxxx
 NEXT_PUBLIC_STRIPE_PRICE_ID_500=price_xxxxxxxxxxxxx
 ```
 
-3. Run the Supabase migration:
+3. Run the Supabase migrations:
 
    - Go to your Supabase Dashboard
    - Navigate to SQL Editor
    - Run the contents of `supabase/migrations/001_initial_schema.sql`
+   - Run the contents of `supabase/migrations/003_permanent_coordinate_fix.sql`
+   
+   **Note**: The coordinate fix migration deletes all existing dots and enforces normalized [0,1] coordinates. If you need to reset dots in the future, run:
+   ```sql
+   DELETE FROM dots;
+   ```
 
 4. Set up Stripe Products and Prices:
 

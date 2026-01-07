@@ -5,7 +5,7 @@ import { v4 as uuidv4 } from 'uuid'
 
 export async function POST(request: NextRequest) {
   try {
-    const { sessionId, x, y } = await request.json()
+    const { sessionId, x, y, clientW, clientH } = await request.json()
 
     if (!sessionId || typeof x !== 'number' || typeof y !== 'number') {
       return NextResponse.json(
@@ -14,9 +14,18 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Validate and clamp coordinates to [0,1]
-    const xNorm = Math.max(0, Math.min(1, x))
-    const yNorm = Math.max(0, Math.min(1, y))
+    // PERMANENT FIX: Reject coordinates outside [0,1] instead of clamping
+    // This prevents pixel coordinates from entering the database
+    if (x < 0 || x > 1 || y < 0 || y > 1) {
+      return NextResponse.json(
+        { error: 'Invalid coordinates: x and y must be in range [0,1]' },
+        { status: 400 }
+      )
+    }
+
+    // Coordinates are already normalized [0,1]
+    const xNorm = x
+    const yNorm = y
 
     // Fetch session
     const { data: session, error: sessionError } = await supabaseAdmin
@@ -50,7 +59,9 @@ export async function POST(request: NextRequest) {
           x: xNorm,
           y: yNorm,
           color_hex: normalizeHex(session.color_hex),
-          phase: 'blind'
+          phase: 'blind',
+          client_w: typeof clientW === 'number' ? clientW : null,
+          client_h: typeof clientH === 'number' ? clientH : null
         })
 
       if (dotError) {
@@ -110,7 +121,9 @@ export async function POST(request: NextRequest) {
           x: xNorm,
           y: yNorm,
           color_hex: normalizeHex(session.color_hex),
-          phase: 'paid'
+          phase: 'paid',
+          client_w: typeof clientW === 'number' ? clientW : null,
+          client_h: typeof clientH === 'number' ? clientH : null
         })
 
       if (dotError) {

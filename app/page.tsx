@@ -179,14 +179,15 @@ export default function Home() {
   }
 
   const placeDot = async (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!session || !canvasContainerRef.current) return
+    if (!session || !canvasRef.current) return
 
-    const rect = canvasContainerRef.current.getBoundingClientRect()
+    // PERMANENT FIX: Use canvas.getBoundingClientRect() for accurate coordinates
+    const rect = canvasRef.current.getBoundingClientRect()
     // Compute normalized coordinates [0,1]
     let xNorm = (e.clientX - rect.left) / rect.width
     let yNorm = (e.clientY - rect.top) / rect.height
     
-    // Clamp to [0,1]
+    // Clamp to [0,1] (client-side validation before sending)
     xNorm = Math.max(0, Math.min(1, xNorm))
     yNorm = Math.max(0, Math.min(1, yNorm))
 
@@ -210,7 +211,9 @@ export default function Home() {
         body: JSON.stringify({
           sessionId: session.sessionId,
           x: xNorm,
-          y: yNorm
+          y: yNorm,
+          clientW: rect.width,  // Optional: for debugging/auditing
+          clientH: rect.height  // Optional: for debugging/auditing
         })
       })
 
