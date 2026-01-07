@@ -382,10 +382,19 @@ export default function Home() {
         ))
       }
 
-      // Auto-reveal: if revealed became true, fetch all dots
-      if (updatedSession.revealed && !serverSession.revealed) {
-        console.log('[CLIENT] Auto-revealing (revealed === true)')
-        setLocalDots([]) // Clear local dots
+      // Auto-reveal: if revealed became true (or blindDotsUsed >= 10), fetch all dots
+      // Important: do NOT call /api/dots/all before session.revealed is true
+      if (updatedSession.revealed) {
+        if (!serverSession.revealed) {
+          console.log('[CLIENT] Auto-revealing (revealed === true), fetching all dots')
+          setLocalDots([]) // Clear local dots
+        }
+        // Fetch all dots - session is revealed
+        await fetchAllDots(updatedSession.sessionId)
+      } else if (updatedSession.blindDotsUsed >= 10 && !updatedSession.revealed) {
+        // Edge case: blindDotsUsed >= 10 but revealed not set yet
+        // This shouldn't happen if server logic is correct, but handle it anyway
+        console.log('[CLIENT] Blind dots complete but not revealed, triggering reveal sequence')
         await triggerReveal(updatedSession.sessionId)
       }
     } catch (error) {
