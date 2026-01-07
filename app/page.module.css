@@ -73,7 +73,7 @@
   box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.2);
 }
 
-/* Top-right Badge */
+/* Top-right Badge (Clickable) */
 .badge {
   position: fixed;
   top: 16px;
@@ -89,6 +89,15 @@
   gap: 8px;
   font-size: 14px;
   color: #000;
+  border: none;
+  cursor: pointer;
+  transition: background 0.2s, box-shadow 0.2s;
+  font-family: inherit;
+}
+
+.badge:hover {
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow: 0 2px 4px 0 rgba(0, 0, 0, 0.1);
 }
 
 .badgeSwatch {
@@ -98,9 +107,23 @@
   flex-shrink: 0;
 }
 
+.badgeContent {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-start;
+}
+
 .badgeText {
   font-weight: 500;
   white-space: nowrap;
+  line-height: 1.2;
+}
+
+.badgeSubtext {
+  font-size: 11px;
+  opacity: 0.7;
+  line-height: 1.2;
 }
 
 /* Full Viewport Canvas */
@@ -126,7 +149,91 @@
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
 }
 
-/* Hidden reveal button (for programmatic access if needed) */
-.hiddenRevealButton {
-  display: none;
+/* Purchase Modal */
+.purchaseModal {
+  background: #fff;
+  border-radius: 16px;
+  padding: 24px;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+  max-width: 400px;
+  width: 90%;
+  position: relative;
+}
+
+.purchaseModalHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.purchaseModalTitle {
+  font-size: 20px;
+  font-weight: 600;
+  color: #000;
+  margin: 0;
+}
+
+.purchaseModalClose {
+  background: none;
+  border: none;
+  font-size: 28px;
+  line-height: 1;
+  color: #666;
+  cursor: pointer;
+  padding: 0;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  transition: background 0.2s;
+}
+
+.purchaseModalClose:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.purchaseModalContent {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.currentCredits {
+  font-size: 14px;
+  color: #666;
+  margin: 0;
+  text-align: center;
+}
+
+.creditButtons {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.creditButton {
+  padding: 12px 20px;
+  font-size: 14px;
+  font-weight: 500;
+  color: #fff;
+  background: #000;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.1s;
+  width: 100%;
+  font-family: inherit;
+}
+
+.creditButton:hover:not(:disabled) {
+  background: #333;
+  transform: translateY(-1px);
+}
+
+.creditButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }

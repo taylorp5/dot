@@ -28,6 +28,7 @@ export default function Home() {
   const [isRevealed, setIsRevealed] = useState(false)
   const [isLoadingPurchase, setIsLoadingPurchase] = useState(false)
   const [isSelectingColor, setIsSelectingColor] = useState(false)
+  const [showPurchaseModal, setShowPurchaseModal] = useState(false)
   const canvasRef = useRef<HTMLDivElement>(null)
 
   // Load session from localStorage on mount
@@ -39,10 +40,11 @@ export default function Home() {
         setSession(parsed)
         setIsRevealed(parsed.revealed)
         
-        // If revealed, fetch all dots
+        // If revealed, always fetch all dots
         if (parsed.revealed) {
           fetchAllDots(parsed.sessionId)
         }
+        // If not revealed, canvas stays blank (only user's dots from localStorage if any)
       } catch (e) {
         console.error('Error loading session:', e)
       }
@@ -100,6 +102,7 @@ export default function Home() {
       }
 
       setSession(newSession)
+      setIsRevealed(newSession.revealed)
       localStorage.setItem('dotSession', JSON.stringify(newSession))
     } catch (error) {
       console.error('Error initializing session:', error)
@@ -147,9 +150,12 @@ export default function Home() {
       setIsRevealed(updatedSession.revealed)
       localStorage.setItem('dotSession', JSON.stringify(updatedSession))
 
-      // If not revealed, only show our own blind dots
-      if (!updatedSession.revealed) {
-        // Add dot locally (only our own)
+      // Handle auto-reveal: when blind dots reach 0 (10 used), automatically fetch all dots
+      if (!session.revealed && updatedSession.revealed) {
+        // Just became revealed - fetch all dots immediately
+        fetchAllDots(updatedSession.sessionId)
+      } else if (!updatedSession.revealed) {
+        // Still in blind phase - only show our own dots
         setDots(prev => [...prev, {
           x,
           y,
@@ -157,51 +163,10 @@ export default function Home() {
           phase: 'blind',
           created_at: new Date().toISOString()
         }])
-      } else {
-        // If just became revealed, fetch all dots
-        fetchAllDots(updatedSession.sessionId)
       }
     } catch (error) {
       console.error('Error placing dot:', error)
       alert('Failed to place dot')
-    }
-  }
-
-  const revealSession = async () => {
-    if (!session) return
-
-    try {
-      const response = await fetch('/api/session/reveal', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId: session.sessionId })
-      })
-
-      const data = await response.json()
-
-      if (!response.ok) {
-        alert(data.error || 'Failed to reveal session')
-        return
-      }
-
-      const updatedSession: Session = {
-        sessionId: data.sessionId,
-        colorName: data.colorName,
-        colorHex: data.colorHex,
-        blindDotsUsed: data.blindDotsUsed,
-        revealed: data.revealed,
-        credits: data.credits
-      }
-
-      setSession(updatedSession)
-      setIsRevealed(true)
-      localStorage.setItem('dotSession', JSON.stringify(updatedSession))
-
-      // Fetch all dots after revealing
-      fetchAllDots(updatedSession.sessionId)
-    } catch (error) {
-      console.error('Error revealing session:', error)
-      alert('Failed to reveal session')
     }
   }
 
@@ -241,6 +206,7 @@ export default function Home() {
       }
 
       setSession(updatedSession)
+      setIsRevealed(updatedSession.revealed)
       localStorage.setItem('dotSession', JSON.stringify(updatedSession))
     } catch (error) {
       console.error('Error fetching session snapshot:', error)
@@ -287,8 +253,8 @@ export default function Home() {
     { priceId: STRIPE_PRICES.CREDITS_500, credits: 500, price: 5.00, label: '500 Credits - $5.00' },
   ]
 
-  // Find the swatch color for display
-  const swatchColor = session ? COLOR_SWATCHES.find(s => s.name === session.colorName) : null
+  // Calculate dots left (10 - blindDotsUsed)
+  const dotsLeft = session ? Math.max(0, 10 - session.blindDotsUsed) : 0
 
   return (
     <>
@@ -312,16 +278,67 @@ export default function Home() {
         </div>
       )}
 
-      {/* Top-right Badge */}
+      {/* Top-right Badge (Clickable) */}
       {session && (
-        <div className={styles.badge}>
+        <button 
+          className={styles.badge}
+          onClick={() => {
+            if (isRevealed) {
+              setShowPurchaseModal(true)
+            }
+          }}
+        >
           <div 
             className={styles.badgeSwatch}
             style={{ backgroundColor: session.colorHex }}
           />
-          <span className={styles.badgeText}>
-            {session.colorName} — {session.colorHex.toUpperCase()}
-          </span>
+          <div className={styles.badgeContent}>
+            <span className={styles.badgeText}>
+              {session.colorName} — {session.colorHex.toUpperCase()}
+            </span>
+            {!isRevealed && (
+              <span className={styles.badgeSubtext}>
+                Dots left: {dotsLeft}
+              </span>
+            )}
+            {isRevealed && (
+              <span className={styles.badgeSubtext}>
+                Credits: {session.credits}
+              </span>
+            )}
+          </div>
+        </button>
+      )}
+
+      {/* Purchase Modal */}
+      {showPurchaseModal && session && isRevealed && (
+        <div className={styles.modalOverlay} onClick={() => setShowPurchaseModal(false)}>
+          <div className={styles.purchaseModal} onClick={(e) => e.stopPropagation()}>
+            <div className={styles.purchaseModalHeader}>
+              <h3 className={styles.purchaseModalTitle}>Buy Credits</h3>
+              <button 
+                className={styles.purchaseModalClose}
+                onClick={() => setShowPurchaseModal(false)}
+              >
+                ×
+              </button>
+            </div>
+            <div className={styles.purchaseModalContent}>
+              <p className={styles.currentCredits}>Current Credits: {session.credits}</p>
+              <div className={styles.creditButtons}>
+                {creditBundles.map((bundle) => (
+                  <button
+                    key={bundle.priceId}
+                    onClick={() => purchaseCredits(bundle.priceId)}
+                    disabled={isLoadingPurchase}
+                    className={styles.creditButton}
+                  >
+                    {bundle.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
@@ -344,17 +361,6 @@ export default function Home() {
             />
           ))}
         </div>
-      )}
-
-      {/* Hidden controls for reveal and credits (can be triggered programmatically if needed) */}
-      {session && !isRevealed && session.blindDotsUsed >= 10 && (
-        <button 
-          onClick={revealSession} 
-          className={styles.hiddenRevealButton}
-          style={{ display: 'none' }}
-        >
-          Reveal
-        </button>
       )}
     </>
   )

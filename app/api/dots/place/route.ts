@@ -58,11 +58,14 @@ export async function POST(request: NextRequest) {
 
       // Increment blind_dots_used
       const newBlindDotsUsed = session.blind_dots_used + 1
+      // Auto-reveal when blind dots reach 10
+      const shouldReveal = newBlindDotsUsed >= 10
 
       const { data: updatedSession, error: updateError } = await supabaseAdmin
         .from('sessions')
         .update({
-          blind_dots_used: newBlindDotsUsed
+          blind_dots_used: newBlindDotsUsed,
+          revealed: shouldReveal
         })
         .eq('session_id', sessionId)
         .select()
