@@ -135,6 +135,7 @@
   height: 100vh;
   background: #fff;
   z-index: 0; /* Behind UI */
+  pointer-events: auto; /* Allow canvas interactions */
 }
 
 /* Canvas Element */
@@ -147,6 +148,7 @@
   touch-action: none;
   display: block;
   z-index: 0; /* Behind UI */
+  pointer-events: auto; /* Allow canvas interactions */
 }
 
 /* Panel Overlay (Click-outside to close) */

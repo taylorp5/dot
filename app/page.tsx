@@ -673,7 +673,11 @@ export default function Home() {
       {session && (
         <button 
           className={styles.badge}
-          onClick={() => setShowPurchasePanel(prev => !prev)}
+          onClick={() => {
+            // Always toggle panel, but panel content only shows when revealed
+            setShowPurchasePanel(prev => !prev)
+          }}
+          type="button"
         >
           <div 
             className={styles.badgeSwatch}
@@ -698,7 +702,7 @@ export default function Home() {
       )}
 
       {/* Purchase Panel (Popover) */}
-      {showPurchasePanel && session && isRevealed && (
+      {showPurchasePanel && session && (
         <>
           {/* Click-outside overlay */}
           <div 
@@ -717,19 +721,25 @@ export default function Home() {
               </button>
             </div>
             <div className={styles.purchasePanelContent}>
-              <p className={styles.currentCredits}>Current Credits: {session.credits}</p>
-              <div className={styles.creditButtons}>
-                {creditBundles.map((bundle) => (
-                  <button
-                    key={bundle.priceId}
-                    onClick={() => purchaseCredits(bundle.priceId)}
-                    disabled={isLoadingPurchase}
-                    className={styles.creditButton}
-                  >
-                    {bundle.label}
-                  </button>
-                ))}
-              </div>
+              {isRevealed ? (
+                <>
+                  <p className={styles.currentCredits}>Current Credits: {session.credits}</p>
+                  <div className={styles.creditButtons}>
+                    {creditBundles.map((bundle) => (
+                      <button
+                        key={bundle.priceId}
+                        onClick={() => purchaseCredits(bundle.priceId)}
+                        disabled={isLoadingPurchase}
+                        className={styles.creditButton}
+                      >
+                        {bundle.label}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <p className={styles.currentCredits}>Complete 10 dots to unlock credit purchases</p>
+              )}
             </div>
           </div>
         </>
