@@ -230,6 +230,7 @@ export default function Home() {
       const data = await response.json()
 
       if (!response.ok) {
+        console.error('Checkout error:', data)
         alert(data.error || 'Failed to create checkout session')
         setIsLoadingPurchase(false)
         return

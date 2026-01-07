@@ -8,15 +8,17 @@
 // 4. Copy the Price ID (starts with price_) and paste it below
 // 5. Repeat for 100 and 500 credit bundles
 
+// Note: In production, these should be set via environment variables
+// The fallback values below are placeholders and need to be replaced with actual Stripe Price IDs
 export const STRIPE_PRICES = {
   // 25 credits = $0.25
-  CREDITS_25: process.env.STRIPE_PRICE_ID_25 || 'price_xxxxxxxxxxxxx',
+  CREDITS_25: process.env.STRIPE_PRICE_ID_25 || process.env.NEXT_PUBLIC_STRIPE_PRICE_ID_25 || 'price_xxxxxxxxxxxxx',
   
   // 100 credits = $1.00
-  CREDITS_100: process.env.STRIPE_PRICE_ID_100 || 'price_xxxxxxxxxxxxx',
+  CREDITS_100: process.env.STRIPE_PRICE_ID_100 || process.env.NEXT_PUBLIC_STRIPE_PRICE_ID_100 || 'price_xxxxxxxxxxxxx',
   
   // 500 credits = $5.00
-  CREDITS_500: process.env.STRIPE_PRICE_ID_500 || 'price_xxxxxxxxxxxxx',
+  CREDITS_500: process.env.STRIPE_PRICE_ID_500 || process.env.NEXT_PUBLIC_STRIPE_PRICE_ID_500 || 'price_xxxxxxxxxxxxx',
 } as const
 
 // Map price IDs to credit amounts
