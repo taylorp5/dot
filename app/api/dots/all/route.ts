@@ -62,6 +62,15 @@ export async function GET(request: NextRequest) {
       createdAt: dot.created_at
     }))
 
+    // Debug logging
+    console.log('[SERVER] /api/dots/all response:', {
+      totalDots: dotDTOs.length,
+      blindDots: dotDTOs.filter(d => d.phase === 'blind').length,
+      paidDots: dotDTOs.filter(d => d.phase === 'paid').length,
+      requestingSessionId: sessionId,
+      userDots: dotDTOs.filter(d => d.sessionId === sessionId).length
+    })
+
     return NextResponse.json(dotDTOs)
   } catch (error) {
     console.error('Error in dots all:', error)

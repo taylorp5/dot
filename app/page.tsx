@@ -300,15 +300,20 @@ export default function Home() {
       })
 
       setSession(updatedSession)
-      setIsRevealed(updatedSession.revealed)
       localStorage.setItem('dotSession', JSON.stringify(updatedSession))
 
       // Handle auto-reveal: when blind dots reach 10, fetch all dots
       if (!session.revealed && updatedSession.revealed) {
         console.log('[CLIENT] Auto-revealing, fetching all dots')
-        setLocalDots([]) // Clear local dots
-        // Wait for fetch to complete before unlocking
+        // Fetch all dots BEFORE setting isRevealed to true
+        // This ensures revealedDots is populated before canvas switches to it
         await fetchAllDots(updatedSession.sessionId)
+        // Now set revealed state and clear local dots
+        setIsRevealed(true)
+        setLocalDots([])
+      } else {
+        // Not auto-revealing, just update revealed state normally
+        setIsRevealed(updatedSession.revealed)
       }
       
       setIsPlacing(false)
@@ -323,19 +328,50 @@ export default function Home() {
     }
   }
 
-  const fetchAllDots = async (sessionId: string) => {
+  const fetchAllDots = async (sessionId: string, retryCount = 0) => {
+    const MAX_RETRIES = 3
+    const RETRY_DELAY = 500 // 500ms delay between retries
+
     try {
+      console.log('[CLIENT] Fetching all dots for session:', sessionId, `(attempt ${retryCount + 1})`)
       const response = await fetch(`/api/dots/all?sessionId=${sessionId}`)
       const data = await response.json()
 
       if (!response.ok) {
-        console.error('Error fetching dots:', data.error)
+        console.error('[CLIENT] Error fetching dots:', data.error)
         return
+      }
+
+      const userDotsCount = data.filter((dot: Dot) => dot.sessionId === sessionId).length
+      
+      console.log('[CLIENT] Fetched dots:', {
+        count: data.length,
+        phases: data.reduce((acc: Record<string, number>, dot: Dot) => {
+          acc[dot.phase] = (acc[dot.phase] || 0) + 1
+          return acc
+        }, {}),
+        userDots: userDotsCount
+      })
+
+      // If we just revealed and don't see our 10 dots yet, retry after a short delay
+      // This handles potential database read consistency delays
+      // Note: We check if we have fewer than 10 dots for this session, which suggests
+      // the database might not have fully committed all dots yet
+      if (retryCount < MAX_RETRIES && userDotsCount < 10) {
+        console.log(`[CLIENT] Only found ${userDotsCount} user dots (expected 10), retrying in ${RETRY_DELAY}ms...`)
+        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY))
+        return fetchAllDots(sessionId, retryCount + 1)
       }
 
       setRevealedDots(data)
     } catch (error) {
-      console.error('Error fetching all dots:', error)
+      console.error('[CLIENT] Error fetching all dots:', error)
+      // Retry on network errors
+      if (retryCount < MAX_RETRIES) {
+        console.log(`[CLIENT] Retrying fetch after error in ${RETRY_DELAY}ms...`)
+        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY))
+        return fetchAllDots(sessionId, retryCount + 1)
+      }
     }
   }
 
