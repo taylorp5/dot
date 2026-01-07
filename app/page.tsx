@@ -35,21 +35,23 @@ interface PendingDotPlacement {
 }
 
 export default function Home() {
-  const [session, setSession] = useState<Session | null>(null)
+  const [serverSession, setServerSession] = useState<Session | null>(null) // Server state (source of truth)
   const [localDots, setLocalDots] = useState<Dot[]>([]) // Blind phase dots (optimistic + confirmed)
   const [revealedDots, setRevealedDots] = useState<Dot[]>([]) // All dots after reveal
   const [isRevealed, setIsRevealed] = useState(false)
   const [isLoadingPurchase, setIsLoadingPurchase] = useState(false)
   const [isSelectingColor, setIsSelectingColor] = useState(false)
   const [showPurchaseModal, setShowPurchaseModal] = useState(false)
-  const [isPlacing, setIsPlacing] = useState(false) // Lock to prevent duplicate placements
-  const [optimisticRemaining, setOptimisticRemaining] = useState<number | null>(null) // Optimistic counter for display
   const [pendingPlacements, setPendingPlacements] = useState<PendingDotPlacement[]>([])
   const [inFlightCount, setInFlightCount] = useState(0)
+  const [pendingBlind, setPendingBlind] = useState(0) // Count of in-flight blind dot requests
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const canvasContainerRef = useRef<HTMLDivElement>(null)
   
   const MAX_IN_FLIGHT = 3
+  
+  // Alias for backward compatibility
+  const session = serverSession
 
   // Setup canvas with DPR scaling
   useEffect(() => {
@@ -158,7 +160,7 @@ export default function Home() {
           credits: data.credits
         }
 
-        setSession(restoredSession)
+        setServerSession(restoredSession)
         setIsRevealed(restoredSession.revealed)
         localStorage.setItem('dotSession', JSON.stringify(restoredSession))
 
@@ -186,7 +188,7 @@ export default function Home() {
               credits: refreshData.credits
             }
 
-            setSession(updatedSession)
+            setServerSession(updatedSession)
             setIsRevealed(updatedSession.revealed)
             localStorage.setItem('dotSession', JSON.stringify(updatedSession))
           }
@@ -236,7 +238,7 @@ export default function Home() {
         credits: data.credits
       }
 
-      setSession(newSession)
+      setServerSession(newSession)
       setIsRevealed(newSession.revealed)
       localStorage.setItem('dotSession', JSON.stringify(newSession))
     } catch (error) {
@@ -246,22 +248,10 @@ export default function Home() {
     }
   }
 
-  // Calculate remaining dots: use optimistic counter if available, otherwise server state
-  const remainingDots = optimisticRemaining !== null
-    ? optimisticRemaining
-    : (session ? Math.max(0, 10 - session.blindDotsUsed) : 0)
-  
-  // Sync optimistic counter with server state when session updates
-  useEffect(() => {
-    if (session && !isRevealed) {
-      // Reconcile: server state minus pending placements
-      const serverRemaining = Math.max(0, 10 - session.blindDotsUsed)
-      const pendingCount = pendingPlacements.length
-      setOptimisticRemaining(Math.max(0, serverRemaining - pendingCount))
-    } else {
-      setOptimisticRemaining(null)
-    }
-  }, [session?.blindDotsUsed, pendingPlacements.length, isRevealed])
+  // Calculate remaining dots: derived from serverSession + pendingBlind (computed every render)
+  const remainingDots = serverSession && !isRevealed
+    ? Math.max(0, 10 - serverSession.blindDotsUsed - pendingBlind)
+    : 0
 
   // Process queue: execute up to MAX_IN_FLIGHT concurrent requests
   useEffect(() => {
@@ -271,9 +261,14 @@ export default function Home() {
 
     const processNext = async () => {
       const next = pendingPlacements[0]
-      if (!next || !session) return
+      if (!next || !serverSession) return
 
+      const isBlindRequest = !isRevealed
+      
       setInFlightCount(prev => prev + 1)
+      if (isBlindRequest) {
+        setPendingBlind(prev => prev + 1)
+      }
       setPendingPlacements(prev => prev.slice(1))
 
       try {
@@ -281,7 +276,7 @@ export default function Home() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            sessionId: session.sessionId,
+            sessionId: serverSession.sessionId,
             x: next.x,
             y: next.y,
             clientW: next.clientW,
@@ -292,21 +287,17 @@ export default function Home() {
 
         const data = await response.json()
 
+        // Reconcile: decrement pendingBlind after response
+        if (isBlindRequest) {
+          setPendingBlind(prev => Math.max(0, prev - 1))
+        }
+
         if (!response.ok) {
           // Handle NO_FREE_DOTS error
           if (response.status === 409 && data.error === 'NO_FREE_DOTS') {
             console.log('[CLIENT] No free dots left, server confirmed')
             
-            // Remove optimistic dots beyond allowed count
-            if (!isRevealed) {
-              setLocalDots(prev => {
-                // Keep only dots that have been confirmed by server
-                // For now, remove the failed dot
-                return prev.filter(dot => dot.clientDotId !== next.clientDotId)
-              })
-            }
-
-            // Update session from response
+            // Update serverSession from response (source of truth)
             if (data.session) {
               const updatedSession: Session = {
                 sessionId: data.session.sessionId,
@@ -316,13 +307,31 @@ export default function Home() {
                 revealed: data.session.revealed,
                 credits: data.session.credits
               }
-              setSession(updatedSession)
+              setServerSession(updatedSession)
               setIsRevealed(updatedSession.revealed)
               localStorage.setItem('dotSession', JSON.stringify(updatedSession))
+
+              // Rollback extra optimistic dots beyond allowed
+              if (!isRevealed) {
+                setLocalDots(prev => {
+                  // Keep only the first (10 - blindDotsUsed) dots for this session
+                  const allowedCount = 10 - updatedSession.blindDotsUsed
+                  const sessionDots = prev.filter(dot => dot.sessionId === updatedSession.sessionId && dot.phase === 'blind')
+                  const otherDots = prev.filter(dot => dot.sessionId !== updatedSession.sessionId || dot.phase !== 'blind')
+                  return [...otherDots, ...sessionDots.slice(0, allowedCount)]
+                })
+              }
+
+              // Trigger auto-reveal if needed
+              if (updatedSession.blindDotsUsed >= 10 && updatedSession.revealed) {
+                console.log('[CLIENT] Auto-revealing, fetching all dots')
+                setLocalDots([])
+                await fetchAllDots(updatedSession.sessionId)
+              }
             }
 
-            // Stop accepting new blind dots
-            setPendingPlacements([])
+            // Stop accepting new blind dots (remaining will become 0)
+            setPendingPlacements(prev => prev.filter(p => p.clientDotId !== next.clientDotId))
             next.reject(new Error('NO_FREE_DOTS'))
           } else {
             // Other errors: remove optimistic dot
@@ -335,7 +344,7 @@ export default function Home() {
           return
         }
 
-        // Success: update session from server response
+        // Success: update serverSession from server response (source of truth)
         const updatedSession: Session = {
           sessionId: data.sessionId,
           colorName: data.colorName,
@@ -345,12 +354,12 @@ export default function Home() {
           credits: data.credits
         }
 
-        setSession(updatedSession)
+        setServerSession(updatedSession)
         setIsRevealed(updatedSession.revealed)
         localStorage.setItem('dotSession', JSON.stringify(updatedSession))
 
         // Handle auto-reveal
-        if (!session.revealed && updatedSession.revealed) {
+        if (!serverSession.revealed && updatedSession.revealed) {
           console.log('[CLIENT] Auto-revealing, fetching all dots')
           setLocalDots([])
           await fetchAllDots(updatedSession.sessionId)
@@ -360,7 +369,8 @@ export default function Home() {
         setInFlightCount(prev => prev - 1)
       } catch (error) {
         // Remove optimistic dot on error
-        if (!isRevealed) {
+        if (isBlindRequest) {
+          setPendingBlind(prev => Math.max(0, prev - 1))
           setLocalDots(prev => prev.filter(dot => dot.clientDotId !== next.clientDotId))
         }
         console.error('[CLIENT] Error placing dot:', error)
@@ -370,16 +380,22 @@ export default function Home() {
     }
 
     processNext()
-  }, [pendingPlacements, inFlightCount, session, isRevealed])
+  }, [pendingPlacements, inFlightCount, serverSession, isRevealed])
 
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!session || !canvasRef.current) {
+    if (!serverSession || !canvasRef.current) {
       return
     }
 
-    // If in blind phase and remainingDots <= 0, ignore silently
-    if (!isRevealed && remainingDots <= 0) {
-      return
+    // Gate clicks: if in blind phase, check remaining dots
+    if (!isRevealed) {
+      // Compute remaining from serverSession + pendingBlind (derived, not state)
+      const computedRemaining = Math.max(0, 10 - serverSession.blindDotsUsed - pendingBlind)
+      
+      if (computedRemaining === 0) {
+        // Silently ignore - no dots remaining
+        return
+      }
     }
 
     // Compute normalized coordinates
@@ -392,13 +408,13 @@ export default function Home() {
     // Generate client dot ID for idempotency
     const clientDotId = crypto.randomUUID()
 
-    // Immediately append dot to localDots (optimistic UI)
+    // Optimistic UI: immediately append dot to localDots (only in blind phase)
     if (!isRevealed) {
       const optimisticDot: Dot = {
-        sessionId: session.sessionId,
+        sessionId: serverSession.sessionId,
         x: xNorm,
         y: yNorm,
-        colorHex: session.colorHex,
+        colorHex: serverSession.colorHex,
         phase: 'blind',
         createdAt: new Date().toISOString(),
         clientDotId
@@ -406,12 +422,7 @@ export default function Home() {
       setLocalDots(prev => [...prev, optimisticDot])
     }
 
-    // Immediately decrement optimistic counter
-    if (!isRevealed) {
-      setOptimisticRemaining(prev => Math.max(0, (prev ?? remainingDots) - 1))
-    }
-
-    // Queue the request
+    // Queue the request (pendingBlind will be incremented when request starts processing)
     const placementPromise = new Promise<Session>((resolve, reject) => {
       setPendingPlacements(prev => [...prev, {
         clientDotId,
@@ -465,7 +476,7 @@ export default function Home() {
         credits: data.credits
       }
 
-      setSession(updatedSession)
+      setServerSession(updatedSession)
       setIsRevealed(updatedSession.revealed)
       localStorage.setItem('dotSession', JSON.stringify(updatedSession))
     } catch (error) {

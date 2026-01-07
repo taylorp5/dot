@@ -42,33 +42,16 @@ export async function POST(request: NextRequest) {
     }
 
     if (!session.revealed) {
-      // Blind phase - enforce 10 dot limit
+      // Blind phase - enforce 10 dot limit atomically
       console.log('[SERVER] Blind phase placement:', {
         sessionId,
         blind_dots_used_before: session.blind_dots_used,
         x: xNorm,
-        y: yNorm
+        y: yNorm,
+        clientDotId
       })
 
-      if (session.blind_dots_used >= 10) {
-        console.log('[SERVER] Rejecting: blind_dots_used >= 10')
-        return NextResponse.json(
-          { 
-            error: 'NO_FREE_DOTS',
-            session: {
-              sessionId: session.session_id,
-              colorName: session.color_name,
-              colorHex: session.color_hex,
-              blindDotsUsed: session.blind_dots_used,
-              revealed: session.revealed,
-              credits: session.credits
-            }
-          },
-          { status: 409 }
-        )
-      }
-
-      // Check for idempotency: if clientDotId provided, check if dot already exists
+      // Check for idempotency FIRST: if clientDotId provided, check if dot already exists
       if (clientDotId && typeof clientDotId === 'string') {
         const { data: existingDot, error: lookupError } = await supabaseAdmin
           .from('dots')
@@ -100,6 +83,53 @@ export async function POST(request: NextRequest) {
           }
         }
       }
+
+      // ATOMIC UPDATE: Increment blind_dots_used only if < 10 and not revealed
+      // Use update with WHERE clause (atomic) - returns 0 rows if condition fails
+      const { data: atomicUpdate, error: atomicError } = await supabaseAdmin
+        .from('sessions')
+        .update({
+          blind_dots_used: session.blind_dots_used + 1,
+          revealed: (session.blind_dots_used + 1) >= 10
+        })
+        .eq('session_id', sessionId)
+        .eq('revealed', false)
+        .lt('blind_dots_used', 10)
+        .select()
+        .single()
+
+      if (atomicError || !atomicUpdate) {
+        // Update returned 0 rows - limit reached or already revealed
+        console.log('[SERVER] Atomic update failed - limit reached or revealed')
+        
+        // Fetch current session for error response
+        const { data: currentSession } = await supabaseAdmin
+          .from('sessions')
+          .select('*')
+          .eq('session_id', sessionId)
+          .single()
+
+        if (currentSession) {
+          return NextResponse.json(
+            { 
+              error: 'NO_FREE_DOTS',
+              session: {
+                sessionId: currentSession.session_id,
+                colorName: currentSession.color_name,
+                colorHex: currentSession.color_hex,
+                blindDotsUsed: currentSession.blind_dots_used,
+                revealed: currentSession.revealed,
+                credits: currentSession.credits
+              }
+            },
+            { status: 409 }
+          )
+        }
+      }
+
+      // Atomic update succeeded - insert the dot
+      const newBlindDotsUsed = atomicUpdate.blind_dots_used
+      const shouldReveal = atomicUpdate.revealed
 
       // Insert blind dot with normalized coordinates
       const dotId = uuidv4()
@@ -141,6 +171,12 @@ export async function POST(request: NextRequest) {
           // Duplicate client_dot_id - return existing session state (idempotent)
           console.log('[SERVER] Duplicate client_dot_id (idempotent):', { clientDotId })
           
+          // Rollback the increment (decrement blind_dots_used)
+          await supabaseAdmin
+            .from('sessions')
+            .update({ blind_dots_used: newBlindDotsUsed - 1, revealed: false })
+            .eq('session_id', sessionId)
+
           const { data: currentSession } = await supabaseAdmin
             .from('sessions')
             .select('*')
@@ -159,6 +195,12 @@ export async function POST(request: NextRequest) {
           }
         }
 
+        // Rollback the increment on other errors
+        await supabaseAdmin
+          .from('sessions')
+          .update({ blind_dots_used: newBlindDotsUsed - 1, revealed: false })
+          .eq('session_id', sessionId)
+
         console.error('[SERVER] Error inserting dot:', dotError)
         return NextResponse.json(
           { error: 'Failed to place dot' },
@@ -168,41 +210,13 @@ export async function POST(request: NextRequest) {
 
       console.log('[SERVER] Dot inserted successfully:', { dotId, clientDotId })
 
-      // Atomically increment blind_dots_used and auto-reveal if needed
-      const newBlindDotsUsed = session.blind_dots_used + 1
-      const shouldReveal = newBlindDotsUsed >= 10
-
-      const { data: updatedSession, error: updateError } = await supabaseAdmin
-        .from('sessions')
-        .update({
-          blind_dots_used: newBlindDotsUsed,
-          revealed: shouldReveal
-        })
-        .eq('session_id', sessionId)
-        .select()
-        .single()
-
-      if (updateError) {
-        console.error('[SERVER] Error updating session:', updateError)
-        return NextResponse.json(
-          { error: 'Failed to update session' },
-          { status: 500 }
-        )
-      }
-
-      console.log('[SERVER] Session updated:', {
-        sessionId,
-        blind_dots_used_after: updatedSession.blind_dots_used,
-        revealed: updatedSession.revealed
-      })
-
       return NextResponse.json({
-        sessionId: updatedSession.session_id,
-        colorName: updatedSession.color_name,
-        colorHex: updatedSession.color_hex,
-        blindDotsUsed: updatedSession.blind_dots_used,
-        revealed: updatedSession.revealed,
-        credits: updatedSession.credits
+        sessionId: atomicUpdate.session_id,
+        colorName: atomicUpdate.color_name,
+        colorHex: atomicUpdate.color_hex,
+        blindDotsUsed: atomicUpdate.blind_dots_used,
+        revealed: atomicUpdate.revealed,
+        credits: atomicUpdate.credits
       })
     } else {
       // Revealed phase - requires credits
