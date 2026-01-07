@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import styles from './page.module.css'
 import { STRIPE_PRICES } from '@/lib/stripe-prices'
 import { COLOR_SWATCHES } from '@/lib/color-swatches'
@@ -24,15 +24,10 @@ interface Dot {
   clientDotId?: string // For optimistic UI reconciliation
 }
 
-interface PendingDotPlacement {
-  clientDotId: string
-  phase: 'blind' | 'paid' // Set at enqueue time, not computed later
+interface BufferedDot {
   x: number
   y: number
-  clientW: number
-  clientH: number
-  resolve: (session: Session) => void
-  reject: (error: any) => void
+  clientDotId: string
 }
 
 export default function Home() {
@@ -43,17 +38,15 @@ export default function Home() {
   const [isLoadingPurchase, setIsLoadingPurchase] = useState(false)
   const [isSelectingColor, setIsSelectingColor] = useState(false)
   const [showPurchaseModal, setShowPurchaseModal] = useState(false)
-  const [pendingPlacements, setPendingPlacements] = useState<PendingDotPlacement[]>([])
-  const [inFlightCount, setInFlightCount] = useState(0)
-  const [pendingBlindIds, setPendingBlindIds] = useState<Set<string>>(new Set()) // Set of in-flight blind dot clientDotIds
+  const [dotBuffer, setDotBuffer] = useState<BufferedDot[]>([]) // Buffer of dots to send in batch
+  const [isFlushing, setIsFlushing] = useState(false) // Track if batch flush is in progress
   const [isRevealing, setIsRevealing] = useState(false) // Track if reveal is in progress
+  const flushTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const canvasContainerRef = useRef<HTMLDivElement>(null)
   
-  const MAX_IN_FLIGHT = 3
-  
-  // Derived: size of pending blind dots set
-  const pendingBlindSize = pendingBlindIds.size
+  const BUFFER_FLUSH_SIZE = 5
+  const BUFFER_FLUSH_DEBOUNCE_MS = 300
   
   // Alias for backward compatibility
   const session = serverSession
@@ -253,9 +246,9 @@ export default function Home() {
     }
   }
 
-  // Calculate remaining dots: purely derived from serverSession + pendingBlindSize (computed every render)
+  // Calculate remaining dots: purely derived from serverSession + buffer.length (computed every render)
   const remainingDots = serverSession && !isRevealed
-    ? Math.max(0, 10 - serverSession.blindDotsUsed - pendingBlindSize)
+    ? Math.max(0, 10 - serverSession.blindDotsUsed - dotBuffer.length)
     : 0
 
   // Instrumentation: log countdown inputs each render
@@ -263,151 +256,187 @@ export default function Home() {
     if (serverSession && !isRevealed) {
       console.log('[COUNTDOWN]', {
         blindDotsUsed: serverSession.blindDotsUsed,
-        pendingBlindSize,
-        remainingDots,
-        pendingBlindIds: Array.from(pendingBlindIds)
+        bufferLength: dotBuffer.length,
+        remainingDots
       })
     }
-  }, [serverSession?.blindDotsUsed, pendingBlindSize, remainingDots, pendingBlindIds, isRevealed])
+  }, [serverSession?.blindDotsUsed, dotBuffer.length, remainingDots, isRevealed])
 
-  // Process queue: execute up to MAX_IN_FLIGHT concurrent requests
-  useEffect(() => {
-    if (inFlightCount >= MAX_IN_FLIGHT || pendingPlacements.length === 0) {
+  // Flush buffer: send buffered dots to server in batch
+  const flushBuffer = useCallback(async () => {
+    if (!serverSession || dotBuffer.length === 0 || isFlushing) {
       return
     }
 
-    const processNext = async () => {
-      const next = pendingPlacements[0]
-      if (!next || !serverSession) return
+    setIsFlushing(true)
+    const bufferToSend = [...dotBuffer]
+    setDotBuffer([]) // Clear buffer immediately
 
-      // Capture clientDotId and phase at the start (from request object, not computed)
-      const requestClientDotId = next.clientDotId
-      const requestPhase = next.phase
-      
-      setInFlightCount(prev => prev + 1)
-      setPendingPlacements(prev => prev.slice(1))
-
-      try {
-        const response = await fetch('/api/dots/place', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            sessionId: serverSession.sessionId,
-            x: next.x,
-            y: next.y,
-            clientW: next.clientW,
-            clientH: next.clientH,
-            clientDotId: next.clientDotId
-          })
+    try {
+      const response = await fetch('/api/dots/place-batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId: serverSession.sessionId,
+          dots: bufferToSend
         })
+      })
 
-        const data = await response.json()
+      const data = await response.json()
 
-        if (!response.ok) {
-          // Handle NO_FREE_DOTS error (409) - authoritative signal that blind phase is over
-          if (response.status === 409 && data.error === 'NO_FREE_DOTS') {
-            console.log('[CLIENT] NO_FREE_DOTS - triggering reveal sequence')
-            
-            // a) Stop accepting/enqueuing additional blind clicks (freeze blind queue)
-            // b) Clear/cancel any queued blind requests that haven't been sent yet
-            setPendingPlacements(prev => prev.filter(p => p.phase !== 'blind'))
-            setPendingBlindIds(new Set()) // Clear all pending blind IDs
-            
-            // c) Call POST /api/session/reveal and await it
-            // d) Fetch GET /api/session/get to refresh session state
-            // e) Only after revealed is confirmed true, call GET /api/dots/all
-            await triggerReveal(serverSession.sessionId)
-            
-            // Rollback optimistic dots
-            if (requestPhase === 'blind') {
-              setLocalDots(prev => prev.filter(dot => dot.clientDotId !== requestClientDotId))
+      if (!response.ok) {
+        // Handle NO_FREE_DOTS (409) - authoritative signal that blind phase is over
+        if (response.status === 409 && data.error === 'NO_FREE_DOTS') {
+          console.log('[CLIENT] NO_FREE_DOTS - triggering reveal sequence')
+          
+          // Stop accepting clicks (buffer is already cleared)
+          // Trigger reveal sequence
+          if (data.session) {
+            const updatedSession: Session = {
+              sessionId: data.session.sessionId,
+              colorName: data.session.colorName,
+              colorHex: data.session.colorHex,
+              blindDotsUsed: data.session.blindDotsUsed,
+              revealed: data.session.revealed,
+              credits: data.session.credits
             }
-            
-            next.reject(new Error('NO_FREE_DOTS'))
-          } else if (response.status === 400 && data.error === 'Insufficient credits') {
-            // Handle insufficient credits silently (no error logging)
-            // Remove optimistic dot if it was a paid request
-            if (requestPhase === 'paid') {
-              // Paid dots don't have optimistic UI, but clean up if needed
-            }
-            next.reject(new Error('Insufficient credits'))
-          } else {
-            // Other errors: remove optimistic dot
-            if (requestPhase === 'blind') {
-              setLocalDots(prev => prev.filter(dot => dot.clientDotId !== requestClientDotId))
-            }
-            next.reject(new Error(data.error || 'Failed to place dot'))
+            setServerSession(updatedSession)
+            setIsRevealed(updatedSession.revealed)
+            localStorage.setItem('dotSession', JSON.stringify(updatedSession))
           }
-          setInFlightCount(prev => prev - 1)
+          
+          await triggerReveal(serverSession.sessionId)
+          
+          // Rollback optimistic dots that weren't accepted
+          if (!isRevealed) {
+            const acceptedIds = new Set((data.accepted || []).map((d: any) => d.clientDotId))
+            setLocalDots(prev => prev.filter(dot => 
+              dot.sessionId !== serverSession.sessionId || 
+              dot.phase !== 'blind' ||
+              acceptedIds.has(dot.clientDotId)
+            ))
+          }
           return
         }
 
-        // Success: update serverSession from server response (source of truth)
-        const updatedSession: Session = {
-          sessionId: data.sessionId,
-          colorName: data.colorName,
-          colorHex: data.colorHex,
-          blindDotsUsed: data.blindDotsUsed,
-          revealed: data.revealed,
-          credits: data.credits
-        }
-
-        // Prevent out-of-order overwrites: only accept if blindDotsUsed >= current
-        setServerSession(prev => {
-          if (!prev || updatedSession.blindDotsUsed >= prev.blindDotsUsed) {
-            return updatedSession
+        // Handle INSUFFICIENT_CREDITS (400) - silently ignore
+        if (response.status === 400 && data.error === 'INSUFFICIENT_CREDITS') {
+          // Update session state
+          if (data.session) {
+            const updatedSession: Session = {
+              sessionId: data.session.sessionId,
+              colorName: data.session.colorName,
+              colorHex: data.session.colorHex,
+              blindDotsUsed: data.session.blindDotsUsed,
+              revealed: data.session.revealed,
+              credits: data.session.credits
+            }
+            setServerSession(updatedSession)
+            setIsRevealed(updatedSession.revealed)
+            localStorage.setItem('dotSession', JSON.stringify(updatedSession))
           }
-          return prev
-        })
-        
-        setIsRevealed(updatedSession.revealed)
-        localStorage.setItem('dotSession', JSON.stringify(updatedSession))
-
-        // Auto-reveal on success path: if blindDotsUsed === 10, run reveal sequence
-        if (updatedSession.blindDotsUsed === 10 && !serverSession.revealed) {
-          console.log('[CLIENT] Auto-revealing (blindDotsUsed === 10)')
-          setLocalDots([]) // Clear local dots
-          await triggerReveal(updatedSession.sessionId)
+          // Silently stop accepting clicks (no error logging)
+          return
         }
 
-        next.resolve(updatedSession)
-        setInFlightCount(prev => prev - 1)
-      } catch (error) {
-        // Remove optimistic dot on error
-        if (requestPhase === 'blind') {
-          setLocalDots(prev => prev.filter(dot => dot.clientDotId !== requestClientDotId))
+        // Other errors: rollback optimistic dots
+        if (!isRevealed) {
+          const acceptedIds = new Set((data.acceptedDots || []).map((d: any) => d.clientDotId))
+          setLocalDots(prev => prev.filter(dot => 
+            dot.sessionId !== serverSession.sessionId || 
+            dot.phase !== 'blind' ||
+            acceptedIds.has(dot.clientDotId)
+          ))
         }
-        // Don't log "Insufficient credits" as an error (it's expected when credits === 0)
-        if (error instanceof Error && error.message !== 'Insufficient credits') {
-          console.error('[CLIENT] Error placing dot:', error)
-        }
-        next.reject(error)
-        setInFlightCount(prev => prev - 1)
-      } finally {
-        // Remove pending ID in finally block (exactly once per request)
-        // Use request.phase from request object (set at enqueue time), not computed isBlindRequest
-        if (requestPhase === 'blind') {
-          setPendingBlindIds(prev => {
-            const nextSet = new Set(prev)
-            nextSet.delete(requestClientDotId) // Use captured variable, not next.clientDotId
-            console.log('[PENDING REMOVE]', requestClientDotId, 'size', nextSet.size)
-            return nextSet
-          })
-        }
+        return
       }
+
+      // Success: update serverSession from response (source of truth)
+      const updatedSession: Session = {
+        sessionId: data.session.sessionId,
+        colorName: data.session.colorName,
+        colorHex: data.session.colorHex,
+        blindDotsUsed: data.session.blindDotsUsed,
+        revealed: data.session.revealed,
+        credits: data.session.credits
+      }
+
+      // Prevent out-of-order overwrites: only accept if blindDotsUsed >= current
+      setServerSession(prev => {
+        if (!prev || updatedSession.blindDotsUsed >= prev.blindDotsUsed) {
+          return updatedSession
+        }
+        return prev
+      })
+      
+      setIsRevealed(updatedSession.revealed)
+      localStorage.setItem('dotSession', JSON.stringify(updatedSession))
+
+      // Remove optimistic dots that weren't accepted
+      if (!isRevealed) {
+        const acceptedIds = new Set((data.acceptedDots || []).map((d: any) => d.clientDotId))
+        setLocalDots(prev => prev.filter(dot => 
+          dot.sessionId !== serverSession.sessionId || 
+          dot.phase !== 'blind' ||
+          acceptedIds.has(dot.clientDotId)
+        ))
+      }
+
+      // Auto-reveal: if revealed became true, fetch all dots
+      if (updatedSession.revealed && !serverSession.revealed) {
+        console.log('[CLIENT] Auto-revealing (revealed === true)')
+        setLocalDots([]) // Clear local dots
+        await triggerReveal(updatedSession.sessionId)
+      }
+    } catch (error) {
+      console.error('[CLIENT] Error flushing buffer:', error)
+      // On error, keep buffer (it was already cleared, so restore it)
+      setDotBuffer(bufferToSend)
+    } finally {
+      setIsFlushing(false)
+    }
+  }, [serverSession, isRevealed, triggerReveal])
+
+  // Debounced flush: send buffer after debounce period or when buffer reaches size limit
+  useEffect(() => {
+    // Clear existing timeout
+    if (flushTimeoutRef.current) {
+      clearTimeout(flushTimeoutRef.current)
+      flushTimeoutRef.current = null
     }
 
-    processNext()
-  }, [pendingPlacements, inFlightCount, serverSession, isRevealed])
+    // If buffer is empty or flushing, do nothing
+    if (dotBuffer.length === 0 || isFlushing || !serverSession) {
+      return
+    }
+
+    // If buffer reaches size limit, flush immediately
+    if (dotBuffer.length >= BUFFER_FLUSH_SIZE) {
+      flushBuffer()
+      return
+    }
+
+    // Otherwise, set debounced flush
+    flushTimeoutRef.current = setTimeout(() => {
+      flushBuffer()
+    }, BUFFER_FLUSH_DEBOUNCE_MS)
+
+    return () => {
+      if (flushTimeoutRef.current) {
+        clearTimeout(flushTimeoutRef.current)
+        flushTimeoutRef.current = null
+      }
+    }
+  }, [dotBuffer.length, isFlushing, serverSession?.sessionId, flushBuffer])
 
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!serverSession || !canvasRef.current || isRevealing) {
+    if (!serverSession || !canvasRef.current || isRevealing || isFlushing) {
       return
     }
 
     // Strict state machine: gate clicks based on phase
     if (!isRevealed) {
-      // Blind phase: only allow if remaining dots > 0
+      // Blind phase: only allow if remaining dots > 0 (accounting for buffer)
       if (remainingDots === 0) {
         // Silently ignore - no dots remaining
         return
@@ -430,9 +459,6 @@ export default function Home() {
     // Generate client dot ID for idempotency
     const clientDotId = crypto.randomUUID()
 
-    // Determine phase at enqueue time (not computed later) - based on current state
-    const requestPhase: 'blind' | 'paid' = isRevealed ? 'paid' : 'blind'
-
     // Optimistic UI: immediately append dot to localDots (only in blind phase)
     if (!isRevealed) {
       const optimisticDot: Dot = {
@@ -445,34 +471,10 @@ export default function Home() {
         clientDotId
       }
       setLocalDots(prev => [...prev, optimisticDot])
-      
-      // Add pending ID immediately when enqueuing (exactly once)
-      setPendingBlindIds(prev => {
-        const nextSet = new Set(prev)
-        nextSet.add(clientDotId)
-        console.log('[PENDING ADD]', clientDotId, 'size', nextSet.size)
-        return nextSet
-      })
     }
 
-    // Queue the request with phase set at enqueue time
-    const placementPromise = new Promise<Session>((resolve, reject) => {
-      setPendingPlacements(prev => [...prev, {
-        clientDotId,
-        phase: requestPhase, // Set at enqueue time, not computed later
-        x: xNorm,
-        y: yNorm,
-        clientW: rect.width,
-        clientH: rect.height,
-        resolve,
-        reject
-      }])
-    })
-
-    // Handle promise (for error handling if needed)
-    placementPromise.catch(error => {
-      console.error('[CLIENT] Placement failed:', error)
-    })
+    // Add to buffer (will be flushed via debounce or size limit)
+    setDotBuffer(prev => [...prev, { x: xNorm, y: yNorm, clientDotId }])
   }
 
   // Reveal sequence: POST /api/session/reveal → GET /api/session/get → GET /api/dots/all
