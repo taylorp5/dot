@@ -26,3 +26,4 @@ CREATE INDEX IF NOT EXISTS idx_dots_session_id ON dots(session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_color_hex ON sessions(color_hex);
 
 
+

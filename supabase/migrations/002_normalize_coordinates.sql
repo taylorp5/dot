@@ -19,3 +19,4 @@ DELETE FROM dots;
 -- No schema changes needed, just data cleanup
 
 
+

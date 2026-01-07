@@ -32,3 +32,4 @@ ALTER TABLE dots
 -- Any attempt to insert coordinates outside this range will fail with a database error
 
 
+

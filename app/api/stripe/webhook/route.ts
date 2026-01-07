@@ -41,32 +41,59 @@ export async function POST(request: NextRequest) {
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object as Stripe.Checkout.Session
 
-    // Get sessionId from metadata or client_reference_id
-    const sessionId = session.metadata?.sessionId || session.client_reference_id
-    
-    // Get priceId from metadata (we store it there in checkout route)
-    const priceId = session.metadata?.priceId
+    console.log('[webhook] session.id', session.id)
 
-    if (!sessionId || !priceId) {
-      console.error('Missing sessionId or priceId in webhook event')
+    // Determine sessionId in priority order: client_reference_id first, then metadata
+    const sessionId = session.client_reference_id || session.metadata?.sessionId
+
+    if (!sessionId) {
+      console.error('[webhook] Missing sessionId in webhook event')
       return NextResponse.json(
-        { error: 'Missing required data' },
+        { error: 'Missing sessionId' },
         { status: 400 }
       )
     }
 
-    // Determine credits to grant based on priceId
+    console.log('[webhook] sessionId', sessionId)
+
+    // Fetch the purchased priceId from Stripe line items instead of metadata
+    let priceId: string | null = null
+    try {
+      const lineItems = await stripe.checkout.sessions.listLineItems(session.id, { limit: 5 })
+      priceId = lineItems.data[0]?.price?.id || null
+    } catch (lineItemsError) {
+      console.error('[webhook] Error fetching line items:', lineItemsError)
+      return NextResponse.json(
+        { error: 'Failed to fetch line items' },
+        { status: 500 }
+      )
+    }
+
+    if (!priceId) {
+      console.error('[webhook] Missing priceId in line items')
+      return NextResponse.json(
+        { error: 'Missing priceId' },
+        { status: 400 }
+      )
+    }
+
+    console.log('[webhook] priceId', priceId)
+
+    // Map creditsToGrant from PRICE_TO_CREDITS
     const creditsToGrant = PRICE_TO_CREDITS[priceId]
 
     if (!creditsToGrant) {
-      console.error(`Unknown priceId: ${priceId}`)
+      console.error(`[webhook] Unknown priceId: ${priceId}`)
+      console.error(`[webhook] Available priceIds:`, Object.keys(PRICE_TO_CREDITS))
       return NextResponse.json(
         { error: 'Unknown priceId' },
         { status: 400 }
       )
     }
 
-    // Fetch current session to get current credits
+    console.log('[webhook] creditsToGrant', creditsToGrant)
+
+    // Fetch current session to verify it exists and log current credits
     const { data: currentSession, error: fetchError } = await supabaseAdmin
       .from('sessions')
       .select('credits')
@@ -74,30 +101,48 @@ export async function POST(request: NextRequest) {
       .single()
 
     if (fetchError || !currentSession) {
-      console.error('Error fetching session:', fetchError)
+      console.error('[webhook] Error fetching session:', fetchError)
       return NextResponse.json(
         { error: 'Session not found' },
         { status: 404 }
       )
     }
 
-    // Update session credits
-    const { error: updateError } = await supabaseAdmin
-      .from('sessions')
-      .update({
-        credits: currentSession.credits + creditsToGrant
-      })
-      .eq('session_id', sessionId)
+    console.log('[webhook] Current credits before update:', currentSession.credits)
 
-    if (updateError) {
-      console.error('Error updating session credits:', updateError)
-      return NextResponse.json(
-        { error: 'Failed to update credits' },
-        { status: 500 }
-      )
+    // Use RPC function for atomic credit increment (avoids race conditions)
+    const { data: newCredits, error: rpcError } = await supabaseAdmin
+      .rpc('increment_credits', {
+        p_session_id: sessionId,
+        p_amount: creditsToGrant
+      })
+
+    if (rpcError) {
+      console.error('[webhook] Error calling increment_credits RPC:', rpcError)
+      // Fallback to select+update if RPC fails
+      const { data: updatedSession, error: updateError } = await supabaseAdmin
+        .from('sessions')
+        .update({
+          credits: currentSession.credits + creditsToGrant
+        })
+        .eq('session_id', sessionId)
+        .select('credits')
+        .single()
+
+      if (updateError) {
+        console.error('[webhook] Error updating session credits (fallback):', updateError)
+        return NextResponse.json(
+          { error: 'Failed to update credits' },
+          { status: 500 }
+        )
+      }
+
+      console.log('[webhook] Credits after update (fallback):', updatedSession?.credits)
+    } else {
+      console.log('[webhook] Credits after update (RPC):', newCredits)
     }
 
-    console.log(`Granted ${creditsToGrant} credits to session ${sessionId}`)
+    console.log(`[webhook] Granted ${creditsToGrant} credits to session ${sessionId}`)
   }
 
   return NextResponse.json({ received: true })
