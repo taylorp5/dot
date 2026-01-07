@@ -5,7 +5,7 @@ import { v4 as uuidv4 } from 'uuid'
 
 export async function POST(request: NextRequest) {
   try {
-    const { sessionId, x, y, clientW, clientH } = await request.json()
+    const { sessionId, x, y, clientW, clientH, clientDotId } = await request.json()
 
     if (!sessionId || typeof x !== 'number' || typeof y !== 'number') {
       return NextResponse.json(
@@ -68,24 +68,97 @@ export async function POST(request: NextRequest) {
         )
       }
 
+      // Check for idempotency: if clientDotId provided, check if dot already exists
+      if (clientDotId && typeof clientDotId === 'string') {
+        const { data: existingDot, error: lookupError } = await supabaseAdmin
+          .from('dots')
+          .select('id, session_id')
+          .eq('session_id', sessionId)
+          .eq('client_dot_id', clientDotId)
+          .single()
+
+        if (existingDot && !lookupError) {
+          // Dot already exists - return existing session state (idempotent)
+          console.log('[SERVER] Dot already exists (idempotent):', { clientDotId, dotId: existingDot.id })
+          
+          // Fetch current session state
+          const { data: currentSession } = await supabaseAdmin
+            .from('sessions')
+            .select('*')
+            .eq('session_id', sessionId)
+            .single()
+
+          if (currentSession) {
+            return NextResponse.json({
+              sessionId: currentSession.session_id,
+              colorName: currentSession.color_name,
+              colorHex: currentSession.color_hex,
+              blindDotsUsed: currentSession.blind_dots_used,
+              revealed: currentSession.revealed,
+              credits: currentSession.credits
+            })
+          }
+        }
+      }
+
       // Insert blind dot with normalized coordinates
       const dotId = uuidv4()
+      const insertData: any = {
+        id: dotId,
+        session_id: sessionId,
+        x: xNorm,
+        y: yNorm,
+        color_hex: normalizeHex(session.color_hex),
+        phase: 'blind',
+        client_w: typeof clientW === 'number' ? clientW : null,
+        client_h: typeof clientH === 'number' ? clientH : null
+      }
+
+      // Include client_dot_id if provided (for idempotency)
+      if (clientDotId && typeof clientDotId === 'string') {
+        insertData.client_dot_id = clientDotId
+      }
+
       const { data: insertedDot, error: dotError } = await supabaseAdmin
         .from('dots')
-        .insert({
-          id: dotId,
-          session_id: sessionId,
-          x: xNorm,
-          y: yNorm,
-          color_hex: normalizeHex(session.color_hex),
-          phase: 'blind',
-          client_w: typeof clientW === 'number' ? clientW : null,
-          client_h: typeof clientH === 'number' ? clientH : null
-        })
+        .insert(insertData)
         .select()
         .single()
 
       if (dotError) {
+        // Check if it's a unique constraint violation (duplicate client_dot_id)
+        const errorCode = dotError.code
+        const errorMessage = dotError.message || ''
+        
+        const isUniqueViolation = 
+          errorCode === '23505' || 
+          errorCode === 'PGRST116' ||
+          errorMessage.toLowerCase().includes('unique') ||
+          errorMessage.toLowerCase().includes('duplicate') ||
+          errorMessage.includes('client_dot_id')
+
+        if (isUniqueViolation && clientDotId) {
+          // Duplicate client_dot_id - return existing session state (idempotent)
+          console.log('[SERVER] Duplicate client_dot_id (idempotent):', { clientDotId })
+          
+          const { data: currentSession } = await supabaseAdmin
+            .from('sessions')
+            .select('*')
+            .eq('session_id', sessionId)
+            .single()
+
+          if (currentSession) {
+            return NextResponse.json({
+              sessionId: currentSession.session_id,
+              colorName: currentSession.color_name,
+              colorHex: currentSession.color_hex,
+              blindDotsUsed: currentSession.blind_dots_used,
+              revealed: currentSession.revealed,
+              credits: currentSession.credits
+            })
+          }
+        }
+
         console.error('[SERVER] Error inserting dot:', dotError)
         return NextResponse.json(
           { error: 'Failed to place dot' },
@@ -93,7 +166,7 @@ export async function POST(request: NextRequest) {
         )
       }
 
-      console.log('[SERVER] Dot inserted successfully:', { dotId })
+      console.log('[SERVER] Dot inserted successfully:', { dotId, clientDotId })
 
       // Atomically increment blind_dots_used and auto-reveal if needed
       const newBlindDotsUsed = session.blind_dots_used + 1
