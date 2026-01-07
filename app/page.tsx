@@ -100,48 +100,98 @@ export default function Home() {
     })
   }
 
-  // Load session from localStorage on mount
+  // Load session from localStorage on mount and fetch from API
   useEffect(() => {
-    const savedSession = localStorage.getItem('dotSession')
-    if (savedSession) {
+    const loadSession = async () => {
+      // Read sessionId from localStorage
+      const savedSession = localStorage.getItem('dotSession')
+      if (!savedSession) {
+        setIsSelectingColor(true)
+        return
+      }
+
       try {
         const parsed = JSON.parse(savedSession)
-        setSession(parsed)
-        setIsRevealed(parsed.revealed)
-        
-        // If revealed, always fetch all dots
-        if (parsed.revealed) {
-          fetchAllDots(parsed.sessionId)
+        const sessionId = parsed.sessionId
+
+        if (!sessionId) {
+          setIsSelectingColor(true)
+          return
         }
-        // If not revealed, canvas stays blank (localDots starts empty)
+
+        // Fetch session from API to get latest state
+        const response = await fetch(`/api/session/get?sessionId=${sessionId}`)
+        const data = await response.json()
+
+        if (!response.ok) {
+          // Session not found (404) or other error - show color picker
+          if (response.status === 404) {
+            localStorage.removeItem('dotSession')
+          }
+          setIsSelectingColor(true)
+          return
+        }
+
+        // Set session state immediately
+        const restoredSession: Session = {
+          sessionId: data.sessionId,
+          colorName: data.colorName,
+          colorHex: data.colorHex,
+          blindDotsUsed: data.blindDotsUsed,
+          revealed: data.revealed,
+          credits: data.credits
+        }
+
+        setSession(restoredSession)
+        setIsRevealed(restoredSession.revealed)
+        localStorage.setItem('dotSession', JSON.stringify(restoredSession))
+
+        // If revealed, fetch all dots
+        if (restoredSession.revealed) {
+          fetchAllDots(restoredSession.sessionId)
+        }
+
+        // Check for Stripe success redirect
+        const params = new URLSearchParams(window.location.search)
+        const success = params.get('success')
+
+        if (success === '1') {
+          // Refetch session to get updated credits after Stripe payment
+          const refreshResponse = await fetch(`/api/session/get?sessionId=${sessionId}`)
+          const refreshData = await refreshResponse.json()
+
+          if (refreshResponse.ok) {
+            const updatedSession: Session = {
+              sessionId: refreshData.sessionId,
+              colorName: refreshData.colorName,
+              colorHex: refreshData.colorHex,
+              blindDotsUsed: refreshData.blindDotsUsed,
+              revealed: refreshData.revealed,
+              credits: refreshData.credits
+            }
+
+            setSession(updatedSession)
+            setIsRevealed(updatedSession.revealed)
+            localStorage.setItem('dotSession', JSON.stringify(updatedSession))
+          }
+
+          // Clean up URL param
+          window.history.replaceState({}, '', window.location.pathname)
+        } else {
+          // Clean up any other query params
+          const canceled = params.get('canceled')
+          if (canceled === '1') {
+            window.history.replaceState({}, '', window.location.pathname)
+          }
+        }
       } catch (e) {
         console.error('Error loading session:', e)
+        setIsSelectingColor(true)
       }
-    } else {
-      setIsSelectingColor(true)
     }
+
+    loadSession()
   }, [])
-
-  // Handle success/cancel redirects from Stripe
-  useEffect(() => {
-    if (typeof window === 'undefined') return
-    
-    const params = new URLSearchParams(window.location.search)
-    const success = params.get('success')
-    const canceled = params.get('canceled')
-
-    if (success === '1' && session) {
-      // Refetch session to get updated credits
-      fetchSessionSnapshot(session.sessionId)
-      // Clean up URL
-      window.history.replaceState({}, '', window.location.pathname)
-    } else if (canceled === '1') {
-      // User canceled - could show a message if needed
-      console.log('Payment canceled')
-      // Clean up URL
-      window.history.replaceState({}, '', window.location.pathname)
-    }
-  }, [session])
 
   const initSession = async (colorName: string) => {
     setIsSelectingColor(false)
@@ -341,7 +391,7 @@ export default function Home() {
 
   const fetchSessionSnapshot = async (sessionId: string) => {
     try {
-      const response = await fetch(`/api/session?sessionId=${sessionId}`)
+      const response = await fetch(`/api/session/get?sessionId=${sessionId}`)
       const data = await response.json()
 
       if (!response.ok) {
