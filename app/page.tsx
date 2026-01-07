@@ -36,7 +36,9 @@ type AppAction =
   | { type: 'OPTIMISTIC_ADD'; dot: Dot }
   | { type: 'OPTIMISTIC_REMOVE'; clientDotId: string }
   | { type: 'MINE_SET'; dots: Dot[] }
+  | { type: 'MINE_ADD'; dot: Dot }
   | { type: 'ALL_SET'; dots: Dot[] }
+  | { type: 'ALL_ADD'; dot: Dot }
 
 function appReducer(state: AppState, action: AppAction): AppState {
   switch (action.type) {
@@ -65,8 +67,20 @@ function appReducer(state: AppState, action: AppAction): AppState {
         hydratedMine: true
       }
     
+    case 'MINE_ADD':
+      // Add dot to mineServer (server-confirmed dot)
+      return {
+        ...state,
+        mineServer: [...state.mineServer, action.dot],
+        optimistic: state.optimistic.filter(opt => opt.clientDotId !== action.dot.clientDotId)
+      }
+    
     case 'ALL_SET':
       return { ...state, allServer: action.dots }
+    
+    case 'ALL_ADD':
+      // Add dot to allServer (for revealed mode)
+      return { ...state, allServer: [...state.allServer, action.dot] }
     
     default:
       return state
@@ -173,7 +187,7 @@ export default function Home() {
         
         // If revealed, fetch all dots
         if (hydratedSession.revealed) {
-          fetch(`/api/dots/all?sessionId=${sessionId}`, { cache: 'no-store' })
+          fetch(`/api/dots/all?sessionId=${sessionId}&t=${Date.now()}`, { cache: 'no-store' })
             .then(async (res) => {
               if (res.ok) {
                 const allDots: Dot[] = await res.json()
@@ -195,7 +209,7 @@ export default function Home() {
   useEffect(() => {
     if (state.session?.revealed && state.allServer.length === 0) {
       // Fetch all dots exactly once when revealed
-      fetch(`/api/dots/all?sessionId=${state.session.sessionId}`, { cache: 'no-store' })
+      fetch(`/api/dots/all?sessionId=${state.session.sessionId}&t=${Date.now()}`, { cache: 'no-store' })
         .then(async (res) => {
           if (res.ok) {
             const allDots: Dot[] = await res.json()
@@ -350,7 +364,7 @@ export default function Home() {
         return
       }
 
-      // On success: dispatch SESSION_SET(response.session) ONLY
+      // On success: dispatch SESSION_SET(response.session) and handle insertedDot
       if (data.session) {
         dispatch({ type: 'SESSION_SET', session: {
           sessionId: data.session.sessionId,
@@ -362,9 +376,17 @@ export default function Home() {
         }})
         localStorage.setItem('justadot_session_id', data.session.sessionId)
 
-        // If revealed, fetch all dots exactly once
+        // Immediately append insertedDot into myDots (and optionally into allDots if revealed)
+        if (data.insertedDot) {
+          dispatch({ type: 'MINE_ADD', dot: data.insertedDot })
+          if (data.session.revealed) {
+            dispatch({ type: 'ALL_ADD', dot: data.insertedDot })
+          }
+        }
+
+        // If revealed, fetch all dots exactly once (but insertedDot already added above)
         if (data.session.revealed && !state.session.revealed) {
-          fetch(`/api/dots/all?sessionId=${data.session.sessionId}`, { cache: 'no-store' })
+          fetch(`/api/dots/all?sessionId=${data.session.sessionId}&t=${Date.now()}`, { cache: 'no-store' })
             .then(async (res) => {
               if (res.ok) {
                 const allDots: Dot[] = await res.json()
@@ -420,9 +442,11 @@ export default function Home() {
 
   // Rendering logic
   const isRevealed = state.session?.revealed === true
+  // In revealed mode, merge myDots into allDots so newest dots always show
+  const myDots = mergeDots([...state.mineServer, ...state.optimistic])
   const renderDots = isRevealed
-    ? state.allServer
-    : mergeDots([...state.mineServer, ...state.optimistic])
+    ? mergeDots([...state.allServer, ...myDots])
+    : myDots
 
   const remainingDots = state.session ? Math.max(0, 10 - state.session.blindDotsUsed) : 0
 

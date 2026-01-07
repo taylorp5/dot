@@ -3,6 +3,7 @@ import { supabaseAdmin } from '@/lib/supabase-server'
 import { normalizeHex } from '@/lib/color-pools'
 
 export const dynamic = 'force-dynamic'
+export const revalidate = 0
 
 export async function GET(request: NextRequest) {
   try {
@@ -41,7 +42,9 @@ export async function GET(request: NextRequest) {
       clientDotId: dot.client_dot_id || undefined
     }))
 
-    return NextResponse.json(dotDTOs)
+    const response = NextResponse.json(dotDTOs)
+    response.headers.set('Cache-Control', 'no-store')
+    return response
   } catch (error) {
     console.error('Error in dots mine:', error)
     return NextResponse.json(

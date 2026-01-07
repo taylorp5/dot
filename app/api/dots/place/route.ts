@@ -56,7 +56,7 @@ export async function POST(request: NextRequest) {
 
       // Insert dot phase='blind' with session.color_hex
       const dotId = uuidv4()
-      const { error: dotError } = await supabaseAdmin
+      const { data: insertedDotData, error: dotError } = await supabaseAdmin
         .from('dots')
         .insert({
           id: dotId,
@@ -67,8 +67,10 @@ export async function POST(request: NextRequest) {
           phase: 'blind',
           client_dot_id: clientDotId || null
         })
+        .select()
+        .single()
 
-      if (dotError) {
+      if (dotError || !insertedDotData) {
         console.error('Error inserting dot:', dotError)
         return NextResponse.json(
           { error: 'Failed to place dot' },
@@ -128,10 +130,11 @@ export async function POST(request: NextRequest) {
       }
 
       // Insert dot phase='paid'
-      const { error: dotError } = await supabaseAdmin
+      const paidDotId = uuidv4()
+      const { data: insertedPaidDotData, error: dotError } = await supabaseAdmin
         .from('dots')
         .insert({
-          id: uuidv4(),
+          id: paidDotId,
           session_id: sessionId,
           x: x,
           y: y,
@@ -139,8 +142,10 @@ export async function POST(request: NextRequest) {
           phase: 'paid',
           client_dot_id: clientDotId || null
         })
+        .select()
+        .single()
 
-      if (dotError) {
+      if (dotError || !insertedPaidDotData) {
         console.error('Error inserting dot:', dotError)
         return NextResponse.json(
           { error: 'Failed to place dot' },
@@ -166,7 +171,17 @@ export async function POST(request: NextRequest) {
         )
       }
 
-      // Return { session: DTO }
+      // Return { session: DTO, insertedDot: dotDTO }
+      const insertedDot = {
+        sessionId: insertedPaidDotData.session_id,
+        x: insertedPaidDotData.x,
+        y: insertedPaidDotData.y,
+        colorHex: normalizeHex(insertedPaidDotData.color_hex),
+        phase: insertedPaidDotData.phase as 'blind' | 'paid',
+        createdAt: insertedPaidDotData.created_at,
+        clientDotId: insertedPaidDotData.client_dot_id || undefined
+      }
+
       return NextResponse.json({
         session: {
           sessionId: updatedSession.session_id,
@@ -174,7 +189,8 @@ export async function POST(request: NextRequest) {
           blindDotsUsed: updatedSession.blind_dots_used,
           revealed: updatedSession.revealed,
           credits: updatedSession.credits
-        }
+        },
+        insertedDot: insertedDot
       })
     }
   } catch (error) {
