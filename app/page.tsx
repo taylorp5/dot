@@ -122,29 +122,26 @@ export default function Home() {
   useEffect(() => {
     const loadSession = async () => {
       // Read sessionId from localStorage
-      const savedSession = localStorage.getItem('dotSession')
-      if (!savedSession) {
+      const sessionId = localStorage.getItem('justadot_session_id')
+      
+      // Add temporary client logs
+      console.log('[boot] sessionId from storage', sessionId)
+      
+      if (!sessionId) {
+        // No sessionId in localStorage - show color picker
         setIsSelectingColor(true)
         return
       }
 
       try {
-        const parsed = JSON.parse(savedSession)
-        const sessionId = parsed.sessionId
-
-        if (!sessionId) {
-          setIsSelectingColor(true)
-          return
-        }
-
         // Fetch session from API to get latest state
         const response = await fetch(`/api/session/get?sessionId=${sessionId}`)
         const data = await response.json()
 
         if (!response.ok) {
-          // Session not found (404) or other error - show color picker
+          // Session not found (404) or other error - clear localStorage and show color picker
           if (response.status === 404) {
-            localStorage.removeItem('dotSession')
+            localStorage.removeItem('justadot_session_id')
           }
           setIsSelectingColor(true)
           return
@@ -161,7 +158,9 @@ export default function Home() {
         }
 
         setServerSession(restoredSession)
-        localStorage.setItem('dotSession', JSON.stringify(restoredSession))
+        
+        // Add temporary client logs
+        console.log('[boot] serverSession', restoredSession)
 
         // If revealed, fetch all dots
         if (restoredSession.revealed) {
@@ -188,7 +187,6 @@ export default function Home() {
             }
 
             setServerSession(updatedSession)
-            localStorage.setItem('dotSession', JSON.stringify(updatedSession))
           }
 
           // Clean up URL param
@@ -237,7 +235,8 @@ export default function Home() {
       }
 
       setServerSession(newSession)
-      localStorage.setItem('dotSession', JSON.stringify(newSession))
+      // Store only sessionId in localStorage
+      localStorage.setItem('justadot_session_id', newSession.sessionId)
     } catch (error) {
       console.error('Error initializing session:', error)
       alert('Failed to initialize session')
@@ -316,7 +315,6 @@ export default function Home() {
               credits: data.session.credits
             }
             setServerSession(updatedSession)
-            localStorage.setItem('dotSession', JSON.stringify(updatedSession))
           }
           
           await triggerReveal(serverSession.sessionId)
@@ -346,7 +344,6 @@ export default function Home() {
               credits: data.session.credits
             }
             setServerSession(updatedSession)
-            localStorage.setItem('dotSession', JSON.stringify(updatedSession))
           }
           // Silently stop accepting clicks (no error logging)
           return
@@ -381,8 +378,6 @@ export default function Home() {
         }
         return prev
       })
-      
-      localStorage.setItem('dotSession', JSON.stringify(updatedSession))
 
       // Remove optimistic dots that weren't accepted
       if (!isRevealed) {
@@ -542,7 +537,6 @@ export default function Home() {
       }
 
       setServerSession(refreshedSession)
-      localStorage.setItem('dotSession', JSON.stringify(refreshedSession))
 
       // Step 3: Only after revealed is confirmed true, fetch all dots
       if (refreshedSession.revealed) {
@@ -607,7 +601,6 @@ export default function Home() {
       }
 
       setServerSession(updatedSession)
-      localStorage.setItem('dotSession', JSON.stringify(updatedSession))
     } catch (error) {
       console.error('Error fetching session snapshot:', error)
     }
