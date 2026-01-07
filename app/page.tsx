@@ -362,9 +362,10 @@ export default function Home() {
       }
 
       // Success: update serverSession from response (source of truth)
+      // Response includes full session DTO: { sessionId, colorName, colorHex, blindDotsUsed, revealed, credits }
       const updatedSession: Session = {
         sessionId: data.session.sessionId,
-        colorName: data.session.colorName,
+        colorName: data.session.colorName || serverSession?.colorName || '',
         colorHex: data.session.colorHex,
         blindDotsUsed: data.session.blindDotsUsed,
         revealed: data.session.revealed,

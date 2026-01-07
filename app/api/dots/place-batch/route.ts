@@ -37,7 +37,7 @@ export async function POST(request: NextRequest) {
     // FIRST: Fetch session row - enforce DB-backed sessions
     const { data: session, error: sessionError } = await supabaseAdmin
       .from('sessions')
-      .select('session_id, revealed, blind_dots_used, credits, color_hex')
+      .select('session_id, revealed, blind_dots_used, credits, color_hex, color_name')
       .eq('session_id', sessionId)
       .single()
 
@@ -82,7 +82,7 @@ export async function POST(request: NextRequest) {
             .from('sessions')
             .update({ revealed: true })
             .eq('session_id', sessionId)
-            .select('session_id, revealed, blind_dots_used, credits, color_hex')
+            .select('session_id, color_name, color_hex, blind_dots_used, revealed, credits')
             .single()
 
           if (updateError) {
@@ -103,10 +103,11 @@ export async function POST(request: NextRequest) {
                 error: 'NO_FREE_DOTS',
                 session: {
                   sessionId: updatedSession.session_id,
+                  colorName: updatedSession.color_name,
+                  colorHex: updatedSession.color_hex,
                   blindDotsUsed: updatedSession.blind_dots_used,
                   revealed: updatedSession.revealed,
-                  credits: updatedSession.credits,
-                  colorHex: updatedSession.color_hex
+                  credits: updatedSession.credits
                 },
                 accepted: []
               },
@@ -120,10 +121,11 @@ export async function POST(request: NextRequest) {
             error: 'NO_FREE_DOTS',
             session: {
               sessionId: session.session_id,
+              colorName: session.color_name,
+              colorHex: session.color_hex,
               blindDotsUsed: session.blind_dots_used,
               revealed: session.revealed,
-              credits: session.credits,
-              colorHex: session.color_hex
+              credits: session.credits
             },
             accepted: []
           },
@@ -185,10 +187,14 @@ export async function POST(request: NextRequest) {
       }
 
       // Atomically increment blind_dots_used by actual inserted count
+      // Update revealed in the same statement: revealed = (blind_dots_used + acceptCount) >= 10
       const actualInsertedCount = insertedDots.length
       const newBlindDotsUsed = session.blind_dots_used + actualInsertedCount
       const shouldReveal = newBlindDotsUsed >= 10
 
+      // Single atomic UPDATE statement:
+      // SET blind_dots_used = blind_dots_used + acceptCount,
+      //     revealed = (blind_dots_used + acceptCount) >= 10
       const { data: updatedSession, error: updateError } = await supabaseAdmin
         .from('sessions')
         .update({
@@ -196,7 +202,7 @@ export async function POST(request: NextRequest) {
           revealed: shouldReveal
         })
         .eq('session_id', sessionId)
-        .select('session_id, revealed, blind_dots_used, credits, color_hex')
+        .select('session_id, color_name, color_hex, blind_dots_used, revealed, credits')
         .single()
 
       if (updateError) {
@@ -218,14 +224,15 @@ export async function POST(request: NextRequest) {
         clientDotId: dot.client_dot_id
       }))
 
-      // Always return JSON with session DTO
+      // Always return JSON with session DTO (camelCase)
       return NextResponse.json({
         session: {
           sessionId: updatedSession.session_id,
+          colorName: updatedSession.color_name,
+          colorHex: updatedSession.color_hex,
           blindDotsUsed: updatedSession.blind_dots_used,
           revealed: updatedSession.revealed,
-          credits: updatedSession.credits,
-          colorHex: updatedSession.color_hex
+          credits: updatedSession.credits
         },
         acceptedDots
       })
@@ -309,7 +316,7 @@ export async function POST(request: NextRequest) {
           credits: session.credits - actualInsertedCount
         })
         .eq('session_id', sessionId)
-        .select('session_id, revealed, blind_dots_used, credits, color_hex')
+        .select('session_id, color_name, color_hex, blind_dots_used, revealed, credits')
         .single()
 
       if (updateError) {
@@ -330,13 +337,15 @@ export async function POST(request: NextRequest) {
         clientDotId: dot.client_dot_id
       }))
 
+      // Always return JSON with session DTO (camelCase)
       return NextResponse.json({
         session: {
           sessionId: updatedSession.session_id,
+          colorName: updatedSession.color_name,
+          colorHex: updatedSession.color_hex,
           blindDotsUsed: updatedSession.blind_dots_used,
           revealed: updatedSession.revealed,
-          credits: updatedSession.credits,
-          colorHex: updatedSession.color_hex
+          credits: updatedSession.credits
         },
         acceptedDots
       })
