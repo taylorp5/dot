@@ -37,7 +37,8 @@ export async function GET(request: NextRequest) {
       )
     }
 
-    // Fetch all dots
+    // Fetch ALL dots (blind + paid) - no phase filter
+    // This ensures user's blind dots appear on reveal
     const { data: dots, error: dotsError } = await supabaseAdmin
       .from('dots')
       .select('x, y, color_hex, phase, created_at')

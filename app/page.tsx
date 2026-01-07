@@ -30,6 +30,7 @@ export default function Home() {
   const [isLoadingPurchase, setIsLoadingPurchase] = useState(false)
   const [isSelectingColor, setIsSelectingColor] = useState(false)
   const [showPurchaseModal, setShowPurchaseModal] = useState(false)
+  const [isPlacing, setIsPlacing] = useState(false) // Lock to prevent duplicate placements
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const canvasContainerRef = useRef<HTMLDivElement>(null)
 
@@ -178,8 +179,26 @@ export default function Home() {
     }
   }
 
-  const placeDot = async (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!session || !canvasRef.current) return
+  // Calculate remaining dots from server state (single source of truth)
+  const remainingDots = session 
+    ? Math.max(0, 10 - session.blindDotsUsed)
+    : 0
+
+  const handlePointerDown = async (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!session || !canvasRef.current || isPlacing) {
+      console.log('[CLIENT] Ignoring pointerdown:', { 
+        hasSession: !!session, 
+        hasCanvas: !!canvasRef.current, 
+        isPlacing 
+      })
+      return
+    }
+
+    // Prevent placement if no dots remaining and not revealed
+    if (!isRevealed && remainingDots === 0) {
+      console.log('[CLIENT] No dots remaining, ignoring click')
+      return
+    }
 
     // PERMANENT FIX: Use canvas.getBoundingClientRect() for accurate coordinates
     const rect = canvasRef.current.getBoundingClientRect()
@@ -191,7 +210,18 @@ export default function Home() {
     xNorm = Math.max(0, Math.min(1, xNorm))
     yNorm = Math.max(0, Math.min(1, yNorm))
 
-    // Optimistic UI: Add dot immediately to localDots
+    console.log('[CLIENT] Placing dot:', { 
+      sessionId: session.sessionId, 
+      remaining: remainingDots, 
+      isPlacing: false,
+      x: xNorm, 
+      y: yNorm 
+    })
+
+    // Set lock immediately to prevent duplicate requests
+    setIsPlacing(true)
+
+    // Optimistic UI: Add dot immediately to localDots (only in blind phase)
     const optimisticDot: Dot = {
       x: xNorm,
       y: yNorm,
@@ -224,11 +254,33 @@ export default function Home() {
         if (!isRevealed) {
           setLocalDots(prev => prev.slice(0, -1))
         }
-        alert(data.error || 'Failed to place dot')
+        
+        // Handle NO_FREE_DOTS error silently (no alert)
+        if (response.status === 409 && data.error === 'NO_FREE_DOTS') {
+          console.log('[CLIENT] No free dots left, server confirmed')
+          // Update session from response if provided
+          if (data.session) {
+            const updatedSession: Session = {
+              sessionId: data.session.sessionId,
+              colorName: data.session.colorName,
+              colorHex: data.session.colorHex,
+              blindDotsUsed: data.session.blindDotsUsed,
+              revealed: data.session.revealed,
+              credits: data.session.credits
+            }
+            setSession(updatedSession)
+            setIsRevealed(updatedSession.revealed)
+            localStorage.setItem('dotSession', JSON.stringify(updatedSession))
+          }
+        } else {
+          // Other errors: show alert
+          alert(data.error || 'Failed to place dot')
+        }
+        setIsPlacing(false)
         return
       }
 
-      // Update session
+      // Update session from server response (single source of truth)
       const updatedSession: Session = {
         sessionId: data.sessionId,
         colorName: data.colorName,
@@ -238,24 +290,34 @@ export default function Home() {
         credits: data.credits
       }
 
+      console.log('[CLIENT] Dot placed successfully:', {
+        sessionId: updatedSession.sessionId,
+        blindDotsUsed: updatedSession.blindDotsUsed,
+        revealed: updatedSession.revealed,
+        remaining: Math.max(0, 10 - updatedSession.blindDotsUsed)
+      })
+
       setSession(updatedSession)
       setIsRevealed(updatedSession.revealed)
       localStorage.setItem('dotSession', JSON.stringify(updatedSession))
 
-      // Handle auto-reveal: when blind dots reach 0 (10 used), automatically fetch all dots
+      // Handle auto-reveal: when blind dots reach 10, fetch all dots
       if (!session.revealed && updatedSession.revealed) {
-        // Just became revealed - fetch all dots immediately
+        console.log('[CLIENT] Auto-revealing, fetching all dots')
         setLocalDots([]) // Clear local dots
-        fetchAllDots(updatedSession.sessionId)
+        // Wait for fetch to complete before unlocking
+        await fetchAllDots(updatedSession.sessionId)
       }
-      // If still in blind phase, optimistic dot is already in localDots
+      
+      setIsPlacing(false)
     } catch (error) {
       // Remove optimistic dot on error
       if (!isRevealed) {
         setLocalDots(prev => prev.slice(0, -1))
       }
-      console.error('Error placing dot:', error)
+      console.error('[CLIENT] Error placing dot:', error)
       alert('Failed to place dot')
+      setIsPlacing(false)
     }
   }
 
@@ -343,9 +405,6 @@ export default function Home() {
     { priceId: STRIPE_PRICES.CREDITS_500, credits: 500, price: 5.00, label: '500 Credits - $5.00' },
   ]
 
-  // Calculate dots left (10 - blindDotsUsed)
-  const dotsLeft = session ? Math.max(0, 10 - session.blindDotsUsed) : 0
-
   return (
     <>
       {/* Color Selection Modal */}
@@ -388,7 +447,7 @@ export default function Home() {
             </span>
             {!isRevealed && (
               <span className={styles.badgeSubtext}>
-                Dots left: {dotsLeft}
+                Dots left: {remainingDots}
               </span>
             )}
             {isRevealed && (
@@ -441,7 +500,7 @@ export default function Home() {
           <canvas
             ref={canvasRef}
             className={styles.canvas}
-            onClick={placeDot}
+            onPointerDown={handlePointerDown}
           />
         </div>
       )}

@@ -42,19 +42,38 @@ export async function POST(request: NextRequest) {
     }
 
     if (!session.revealed) {
-      // Blind phase
+      // Blind phase - enforce 10 dot limit
+      console.log('[SERVER] Blind phase placement:', {
+        sessionId,
+        blind_dots_used_before: session.blind_dots_used,
+        x: xNorm,
+        y: yNorm
+      })
+
       if (session.blind_dots_used >= 10) {
+        console.log('[SERVER] Rejecting: blind_dots_used >= 10')
         return NextResponse.json(
-          { error: 'No free dots left — reveal to continue.' },
-          { status: 400 }
+          { 
+            error: 'NO_FREE_DOTS',
+            session: {
+              sessionId: session.session_id,
+              colorName: session.color_name,
+              colorHex: session.color_hex,
+              blindDotsUsed: session.blind_dots_used,
+              revealed: session.revealed,
+              credits: session.credits
+            }
+          },
+          { status: 409 }
         )
       }
 
       // Insert blind dot with normalized coordinates
-      const { error: dotError } = await supabaseAdmin
+      const dotId = uuidv4()
+      const { data: insertedDot, error: dotError } = await supabaseAdmin
         .from('dots')
         .insert({
-          id: uuidv4(),
+          id: dotId,
           session_id: sessionId,
           x: xNorm,
           y: yNorm,
@@ -63,18 +82,21 @@ export async function POST(request: NextRequest) {
           client_w: typeof clientW === 'number' ? clientW : null,
           client_h: typeof clientH === 'number' ? clientH : null
         })
+        .select()
+        .single()
 
       if (dotError) {
-        console.error('Error inserting dot:', dotError)
+        console.error('[SERVER] Error inserting dot:', dotError)
         return NextResponse.json(
           { error: 'Failed to place dot' },
           { status: 500 }
         )
       }
 
-      // Increment blind_dots_used
+      console.log('[SERVER] Dot inserted successfully:', { dotId })
+
+      // Atomically increment blind_dots_used and auto-reveal if needed
       const newBlindDotsUsed = session.blind_dots_used + 1
-      // Auto-reveal when blind dots reach 10
       const shouldReveal = newBlindDotsUsed >= 10
 
       const { data: updatedSession, error: updateError } = await supabaseAdmin
@@ -88,12 +110,18 @@ export async function POST(request: NextRequest) {
         .single()
 
       if (updateError) {
-        console.error('Error updating session:', updateError)
+        console.error('[SERVER] Error updating session:', updateError)
         return NextResponse.json(
           { error: 'Failed to update session' },
           { status: 500 }
         )
       }
+
+      console.log('[SERVER] Session updated:', {
+        sessionId,
+        blind_dots_used_after: updatedSession.blind_dots_used,
+        revealed: updatedSession.revealed
+      })
 
       return NextResponse.json({
         sessionId: updatedSession.session_id,

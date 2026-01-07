@@ -18,3 +18,4 @@ DELETE FROM dots;
 -- Note: The x and y columns are already FLOAT8, so they can store [0,1] values
 -- No schema changes needed, just data cleanup
 
+

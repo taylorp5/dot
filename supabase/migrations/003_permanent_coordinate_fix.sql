@@ -31,3 +31,4 @@ ALTER TABLE dots
 -- Note: The constraint ensures x and y are always in [0,1]
 -- Any attempt to insert coordinates outside this range will fail with a database error
 
+
