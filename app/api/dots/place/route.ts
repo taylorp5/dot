@@ -5,7 +5,7 @@ import { v4 as uuidv4 } from 'uuid'
 
 export async function POST(request: NextRequest) {
   try {
-    const { sessionId, x, y } = await request.json()
+    const { sessionId, x, y, clientDotId } = await request.json()
 
     if (!sessionId || typeof x !== 'number' || typeof y !== 'number') {
       return NextResponse.json(
@@ -64,7 +64,8 @@ export async function POST(request: NextRequest) {
           x: x,
           y: y,
           color_hex: normalizeHex(session.color_hex),
-          phase: 'blind'
+          phase: 'blind',
+          client_dot_id: clientDotId || null
         })
 
       if (dotError) {
@@ -135,7 +136,8 @@ export async function POST(request: NextRequest) {
           x: x,
           y: y,
           color_hex: normalizeHex(session.color_hex),
-          phase: 'paid'
+          phase: 'paid',
+          client_dot_id: clientDotId || null
         })
 
       if (dotError) {

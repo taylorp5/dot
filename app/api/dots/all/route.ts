@@ -42,7 +42,7 @@ export async function GET(request: NextRequest) {
     // This ensures user's blind dots appear on reveal
     const { data: dots, error: dotsError } = await supabaseAdmin
       .from('dots')
-      .select('session_id, x, y, color_hex, phase, created_at')
+      .select('session_id, x, y, color_hex, phase, created_at, client_dot_id')
       .order('created_at', { ascending: true })
 
     if (dotsError) {
@@ -61,7 +61,8 @@ export async function GET(request: NextRequest) {
       y: dot.y,
       colorHex: normalizeHex(dot.color_hex), // Normalize hex for consistency
       phase: dot.phase,
-      createdAt: dot.created_at
+      createdAt: dot.created_at,
+      clientDotId: dot.client_dot_id || undefined
     }))
 
     // Debug logging

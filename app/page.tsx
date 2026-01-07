@@ -1,7 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
-import { v4 as uuidv4 } from 'uuid'
+import { useReducer, useEffect, useRef, useState } from 'react'
 import { COLOR_SWATCHES } from '@/lib/color-swatches'
 import { STRIPE_PRICES } from '@/lib/stripe-prices'
 
@@ -15,26 +14,111 @@ interface Session {
 }
 
 interface Dot {
+  sessionId?: string
   x: number
   y: number
   colorHex: string
   phase: 'blind' | 'paid'
-  sessionId?: string
-  clientDotId?: string
   createdAt?: string
+  clientDotId?: string
+}
+
+interface AppState {
+  session: Session | null
+  optimistic: Dot[]
+  mineServer: Dot[]
+  allServer: Dot[]
+  hydratedMine: boolean
+}
+
+type AppAction =
+  | { type: 'SESSION_SET'; session: Session }
+  | { type: 'OPTIMISTIC_ADD'; dot: Dot }
+  | { type: 'OPTIMISTIC_REMOVE'; clientDotId: string }
+  | { type: 'MINE_SET'; dots: Dot[] }
+  | { type: 'ALL_SET'; dots: Dot[] }
+
+function appReducer(state: AppState, action: AppAction): AppState {
+  switch (action.type) {
+    case 'SESSION_SET':
+      return { ...state, session: action.session }
+    
+    case 'OPTIMISTIC_ADD':
+      return { ...state, optimistic: [...state.optimistic, action.dot] }
+    
+    case 'OPTIMISTIC_REMOVE':
+      return {
+        ...state,
+        optimistic: state.optimistic.filter(d => d.clientDotId !== action.clientDotId)
+      }
+    
+    case 'MINE_SET':
+      // IMPORTANT: merge mineServer with optimistic, don't replace
+      // Server dots replace optimistic dots with same clientDotId, but keep other optimistic dots
+      const merged = mergeDots([...action.dots, ...state.optimistic])
+      return {
+        ...state,
+        mineServer: action.dots, // Store server dots separately
+        optimistic: state.optimistic.filter(opt => 
+          !action.dots.find(server => server.clientDotId === opt.clientDotId)
+        ), // Remove optimistic dots that are now confirmed by server
+        hydratedMine: true
+      }
+    
+    case 'ALL_SET':
+      return { ...state, allServer: action.dots }
+    
+    default:
+      return state
+  }
+}
+
+// Merge function: dedupe by clientDotId when present, otherwise by phase:x:y
+function mergeDots(dots: Dot[]): Dot[] {
+  const seen = new Map<string, Dot>()
+  
+  for (const dot of dots) {
+    let key: string
+    
+    if (dot.clientDotId) {
+      key = `client-${dot.clientDotId}`
+    } else {
+      const roundedX = Math.round(dot.x * 10000)
+      const roundedY = Math.round(dot.y * 10000)
+      key = `${dot.phase}:${roundedX}:${roundedY}`
+    }
+    
+    // Prefer dots with createdAt (server dots) over optimistic dots
+    const existing = seen.get(key)
+    if (!existing) {
+      seen.set(key, dot)
+    } else if (dot.createdAt && !existing.createdAt) {
+      seen.set(key, dot)
+    } else if (!dot.createdAt && existing.createdAt) {
+      // Keep existing server dot
+    }
+  }
+  
+  return Array.from(seen.values())
+}
+
+const initialState: AppState = {
+  session: null,
+  optimistic: [],
+  mineServer: [],
+  allServer: [],
+  hydratedMine: false
 }
 
 export default function Home() {
-  const [session, setSession] = useState<Session | null>(null)
+  const [state, dispatch] = useReducer(appReducer, initialState)
   const [showColorPicker, setShowColorPicker] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
-  const [myDots, setMyDots] = useState<Dot[]>([]) // Only dots for this session (blind+paid)
-  const [allDots, setAllDots] = useState<Dot[]>([]) // All dots, only used after reveal
   const [showBuyPanel, setShowBuyPanel] = useState(false)
   const [isPlacing, setIsPlacing] = useState(false)
   const [isLoadingPurchase, setIsLoadingPurchase] = useState(false)
   const clickableAreaRef = useRef<HTMLDivElement>(null)
-  const hydratedSessionIdRef = useRef<string | null>(null) // Guard to prevent multiple hydrations
+  const hydratedMineRef = useRef(false) // Guard to prevent multiple hydrations
 
   // Hydrate session from localStorage on mount
   useEffect(() => {
@@ -50,7 +134,6 @@ export default function Home() {
     fetch(`/api/session/get?sessionId=${sessionId}`)
       .then(async (res) => {
         if (res.status === 404) {
-          // Session not found, clear localStorage and show color picker
           localStorage.removeItem('justadot_session_id')
           setShowColorPicker(true)
           setIsLoading(false)
@@ -66,21 +149,38 @@ export default function Home() {
         const data = await res.json()
         const hydratedSession: Session = {
           sessionId: data.sessionId,
-          colorName: '', // Not returned by API
+          colorName: '',
           colorHex: data.colorHex,
           blindDotsUsed: data.blindDotsUsed,
           revealed: data.revealed,
           credits: data.credits
         }
         
-        setSession(hydratedSession)
+        dispatch({ type: 'SESSION_SET', session: hydratedSession })
         
-        // Always fetch user's own dots (for blind mode persistence)
-        fetchMyDots(hydratedSession.sessionId)
+        // Fetch user's own dots ONCE per sessionId
+        if (!hydratedMineRef.current) {
+          fetch(`/api/dots/mine?sessionId=${sessionId}`, { cache: 'no-store' })
+            .then(async (res) => {
+              if (res.ok) {
+                const serverDots: Dot[] = await res.json()
+                dispatch({ type: 'MINE_SET', dots: serverDots })
+                hydratedMineRef.current = true
+              }
+            })
+            .catch(console.error)
+        }
         
         // If revealed, fetch all dots
         if (hydratedSession.revealed) {
-          fetchAllDots(hydratedSession.sessionId)
+          fetch(`/api/dots/all?sessionId=${sessionId}`, { cache: 'no-store' })
+            .then(async (res) => {
+              if (res.ok) {
+                const allDots: Dot[] = await res.json()
+                dispatch({ type: 'ALL_SET', dots: allDots })
+              }
+            })
+            .catch(console.error)
         }
         
         setIsLoading(false)
@@ -93,11 +193,18 @@ export default function Home() {
 
   // Monitor session state for reveal trigger
   useEffect(() => {
-    if (session && session.revealed && allDots.length === 0) {
+    if (state.session?.revealed && state.allServer.length === 0) {
       // Fetch all dots exactly once when revealed
-      fetchAllDots(session.sessionId)
+      fetch(`/api/dots/all?sessionId=${state.session.sessionId}`, { cache: 'no-store' })
+        .then(async (res) => {
+          if (res.ok) {
+            const allDots: Dot[] = await res.json()
+            dispatch({ type: 'ALL_SET', dots: allDots })
+          }
+        })
+        .catch(console.error)
     }
-  }, [session?.revealed])
+  }, [state.session?.revealed])
 
   // Handle Stripe success redirect
   useEffect(() => {
@@ -106,123 +213,29 @@ export default function Home() {
     const params = new URLSearchParams(window.location.search)
     const success = params.get('success')
     
-    if (success === '1' && session) {
-      // Refetch session to get updated credits
-      fetch(`/api/session/get?sessionId=${session.sessionId}`)
+    if (success === '1' && state.session) {
+      fetch(`/api/session/get?sessionId=${state.session.sessionId}`)
         .then(async (res) => {
           if (res.ok) {
             const data = await res.json()
-            setSession({
-              sessionId: data.sessionId,
-              colorName: session.colorName,
-              colorHex: data.colorHex,
-              blindDotsUsed: data.blindDotsUsed,
-              revealed: data.revealed,
-              credits: data.credits
+            dispatch({
+              type: 'SESSION_SET',
+              session: {
+                sessionId: data.sessionId,
+                colorName: state.session!.colorName,
+                colorHex: data.colorHex,
+                blindDotsUsed: data.blindDotsUsed,
+                revealed: data.revealed,
+                credits: data.credits
+              }
             })
           }
         })
         .catch(console.error)
       
-      // Clean up URL
       window.history.replaceState({}, '', window.location.pathname)
     }
-  }, [session])
-
-  // Dedupe function: by clientDotId if exists, otherwise by rounded x/y + phase
-  // Prefers server dots (with createdAt) over optimistic dots (with clientDotId)
-  const dedupeByClientDotIdOrXY = (dots: Dot[]): Dot[] => {
-    const seen = new Map<string, Dot>()
-    
-    for (const dot of dots) {
-      let key: string
-      
-      if (dot.clientDotId) {
-        // Dedupe by clientDotId
-        key = `client-${dot.clientDotId}`
-      } else {
-        // Dedupe by rounded x/y + phase
-        const roundedX = Math.round(dot.x * 10000)
-        const roundedY = Math.round(dot.y * 10000)
-        key = `xy-${roundedX}-${roundedY}-${dot.phase}`
-      }
-      
-      // Prefer server dots (with createdAt) over optimistic dots (with clientDotId)
-      const existing = seen.get(key)
-      if (!existing) {
-        seen.set(key, dot)
-      } else if (dot.createdAt && !existing.createdAt) {
-        // Replace optimistic dot with server dot
-        seen.set(key, dot)
-      } else if (!dot.createdAt && existing.createdAt) {
-        // Keep existing server dot, ignore optimistic dot
-        // (do nothing)
-      } else {
-        // Both have createdAt or both don't - keep first (shouldn't happen)
-        // (do nothing)
-      }
-    }
-    
-    return Array.from(seen.values())
-  }
-
-  const fetchMyDots = async (sessionId: string) => {
-    // Guard: only hydrate once per sessionId
-    if (hydratedSessionIdRef.current === sessionId) {
-      return
-    }
-    
-    try {
-      const response = await fetch(`/api/dots/mine?sessionId=${sessionId}`)
-      const data = await response.json()
-
-      if (!response.ok) {
-        console.error('Error fetching my dots:', data.error)
-        return
-      }
-
-      // Map to Dot interface format
-      const serverDots: Dot[] = data.map((dot: any) => ({
-        x: dot.x,
-        y: dot.y,
-        colorHex: dot.colorHex,
-        phase: dot.phase,
-        createdAt: dot.createdAt
-      }))
-
-      // IMPORTANT: merge instead of overwrite
-      setMyDots(prev => dedupeByClientDotIdOrXY([...prev, ...serverDots]))
-      hydratedSessionIdRef.current = sessionId
-    } catch (error) {
-      console.error('Error fetching my dots:', error)
-    }
-  }
-
-  const fetchAllDots = async (sessionId: string) => {
-    try {
-      const response = await fetch(`/api/dots/all?sessionId=${sessionId}`)
-      const data = await response.json()
-
-      if (!response.ok) {
-        console.error('Error fetching dots:', data.error)
-        return
-      }
-
-      // Map to Dot interface format
-      const dots: Dot[] = data.map((dot: any) => ({
-        x: dot.x,
-        y: dot.y,
-        colorHex: dot.colorHex,
-        phase: dot.phase,
-        sessionId: dot.sessionId,
-        createdAt: dot.createdAt
-      }))
-
-      setAllDots(dots)
-    } catch (error) {
-      console.error('Error fetching all dots:', error)
-    }
-  }
+  }, [state.session])
 
   const handleColorSelect = async (colorName: string) => {
     try {
@@ -241,17 +254,17 @@ export default function Home() {
 
       const newSession: Session = {
         sessionId: data.sessionId,
-        colorName: colorName, // Use the selected color name
+        colorName: colorName,
         colorHex: data.colorHex,
         blindDotsUsed: data.blindDotsUsed,
         revealed: data.revealed,
         credits: data.credits
       }
 
-      setSession(newSession)
-      setMyDots([]) // Clear dots for new session
-      setAllDots([]) // Clear all dots for new session
-      hydratedSessionIdRef.current = null // Reset hydration guard
+      dispatch({ type: 'SESSION_SET', session: newSession })
+      dispatch({ type: 'MINE_SET', dots: [] }) // Clear mine dots for new session
+      dispatch({ type: 'ALL_SET', dots: [] }) // Clear all dots for new session
+      hydratedMineRef.current = false // Reset hydration guard
       localStorage.setItem('justadot_session_id', newSession.sessionId)
       setShowColorPicker(false)
     } catch (error) {
@@ -261,19 +274,18 @@ export default function Home() {
   }
 
   const handleClick = async (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!session || !clickableAreaRef.current || isPlacing) {
+    if (!state.session || !clickableAreaRef.current || isPlacing) {
       return
     }
 
     // Only allow clicks in blind mode (not revealed)
-    if (session.revealed) {
+    if (state.session.revealed) {
       return
     }
 
     // Prevent placement if no dots remaining
-    const remainingDots = Math.max(0, 10 - session.blindDotsUsed)
+    const remainingDots = Math.max(0, 10 - state.session.blindDotsUsed)
     if (remainingDots <= 0) {
-      // Ignore silently
       return
     }
 
@@ -286,18 +298,18 @@ export default function Home() {
     const xNorm = Math.max(0, Math.min(1, x))
     const yNorm = Math.max(0, Math.min(1, y))
 
-    // Generate client dot ID for optimistic update
-    const clientDotId = uuidv4()
+    // Generate client dot ID
+    const clientDotId = crypto.randomUUID()
 
-    // Immediately add optimistic dot to myDots
+    // Immediately add optimistic dot
     const optimisticDot: Dot = {
       x: xNorm,
       y: yNorm,
-      colorHex: session.colorHex,
+      colorHex: state.session.colorHex,
       phase: 'blind',
       clientDotId: clientDotId
     }
-    setMyDots(prev => [...prev, optimisticDot])
+    dispatch({ type: 'OPTIMISTIC_ADD', dot: optimisticDot })
 
     setIsPlacing(true)
 
@@ -306,7 +318,7 @@ export default function Home() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          sessionId: session.sessionId,
+          sessionId: state.session.sessionId,
           x: xNorm,
           y: yNorm,
           clientDotId: clientDotId
@@ -316,20 +328,19 @@ export default function Home() {
       const data = await response.json()
 
       if (!response.ok) {
-        // Remove optimistic dot on failure OR keep it (but do NOT reset myDots)
-        setMyDots(prev => prev.filter(dot => dot.clientDotId !== clientDotId))
+        // Remove optimistic dot on failure
+        dispatch({ type: 'OPTIMISTIC_REMOVE', clientDotId })
         
         if (response.status === 409 && data.error === 'NO_FREE_DOTS') {
-          // Update session from response
           if (data.session) {
-            setSession({
+            dispatch({ type: 'SESSION_SET', session: {
               sessionId: data.session.sessionId,
-              colorName: session.colorName,
+              colorName: state.session.colorName,
               colorHex: data.session.colorHex,
               blindDotsUsed: data.session.blindDotsUsed,
               revealed: data.session.revealed,
               credits: data.session.credits
-            })
+            }})
             localStorage.setItem('justadot_session_id', data.session.sessionId)
           }
         } else {
@@ -339,29 +350,35 @@ export default function Home() {
         return
       }
 
-      // On success: setSession(response.session) ONLY
+      // On success: dispatch SESSION_SET(response.session) ONLY
       if (data.session) {
-        setSession({
+        dispatch({ type: 'SESSION_SET', session: {
           sessionId: data.session.sessionId,
-          colorName: session.colorName,
+          colorName: state.session.colorName,
           colorHex: data.session.colorHex,
           blindDotsUsed: data.session.blindDotsUsed,
           revealed: data.session.revealed,
           credits: data.session.credits
-        })
+        }})
         localStorage.setItem('justadot_session_id', data.session.sessionId)
 
         // If revealed, fetch all dots exactly once
-        if (data.session.revealed && !session.revealed) {
-          await fetchAllDots(data.session.sessionId)
+        if (data.session.revealed && !state.session.revealed) {
+          fetch(`/api/dots/all?sessionId=${data.session.sessionId}`, { cache: 'no-store' })
+            .then(async (res) => {
+              if (res.ok) {
+                const allDots: Dot[] = await res.json()
+                dispatch({ type: 'ALL_SET', dots: allDots })
+              }
+            })
+            .catch(console.error)
         }
-        // Do NOT refresh myDots - keep optimistic dot, it will be deduped on next hydration
       }
 
       setIsPlacing(false)
     } catch (error) {
-      // Remove optimistic dot on error OR keep it (but do NOT reset myDots)
-      setMyDots(prev => prev.filter(dot => dot.clientDotId !== clientDotId))
+      // Remove optimistic dot on error
+      dispatch({ type: 'OPTIMISTIC_REMOVE', clientDotId })
       console.error('Error placing dot:', error)
       alert('Failed to place dot')
       setIsPlacing(false)
@@ -369,7 +386,7 @@ export default function Home() {
   }
 
   const purchaseCredits = async (priceId: string) => {
-    if (!session || isLoadingPurchase) return
+    if (!state.session || isLoadingPurchase) return
 
     setIsLoadingPurchase(true)
     try {
@@ -377,7 +394,7 @@ export default function Home() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          sessionId: session.sessionId,
+          sessionId: state.session.sessionId,
           priceId: priceId
         })
       })
@@ -391,7 +408,6 @@ export default function Home() {
         return
       }
 
-      // Redirect to Stripe Checkout
       if (data.url) {
         window.location.href = data.url
       }
@@ -402,7 +418,13 @@ export default function Home() {
     }
   }
 
-  const remainingDots = session ? Math.max(0, 10 - session.blindDotsUsed) : 0
+  // Rendering logic
+  const isRevealed = state.session?.revealed === true
+  const renderDots = isRevealed
+    ? state.allServer
+    : mergeDots([...state.mineServer, ...state.optimistic])
+
+  const remainingDots = state.session ? Math.max(0, 10 - state.session.blindDotsUsed) : 0
 
   if (isLoading) {
     return (
@@ -481,9 +503,9 @@ export default function Home() {
       )}
 
       {/* Blind Mode UI - Show only user's own dots */}
-      {session && !session.revealed && (
+      {state.session && !isRevealed && (
         <div className="fixed inset-0 z-10" style={{ backgroundColor: 'white' }}>
-          {myDots.map((dot, i) => (
+          {renderDots.map((dot, i) => (
             <div
               key={dot.clientDotId || `my-${i}-${dot.createdAt || ''}`}
               style={{
@@ -506,7 +528,7 @@ export default function Home() {
       )}
 
       {/* Reveal UI - Full screen off-white div with all dots */}
-      {session && session.revealed && (
+      {state.session && isRevealed && (
         <div className="fixed inset-0 z-10" style={{ backgroundColor: '#fafafa' }}>
           {/* Hardcoded Debug Dot */}
           <div
@@ -542,7 +564,7 @@ export default function Home() {
           </div>
           
           {/* All Revealed Dots */}
-          {allDots.map((dot, i) => (
+          {renderDots.map((dot, i) => (
             <div
               key={`${dot.sessionId || 'unknown'}-${i}-${dot.createdAt || ''}`}
               style={{
@@ -565,7 +587,7 @@ export default function Home() {
       )}
 
       {/* Debug Label - Top Left */}
-      {session && (
+      {state.session && (
         <div style={{
           position: 'fixed',
           top: '16px',
@@ -579,19 +601,19 @@ export default function Home() {
           fontFamily: 'monospace',
           pointerEvents: 'none'
         }}>
-          {!session.revealed ? (
+          {!isRevealed ? (
             <>
-              <div>My dots: {myDots.length}</div>
+              <div>My dots: {renderDots.length}</div>
               <div style={{ marginTop: '4px', fontSize: '10px' }}>
-                Dots left: {Math.max(0, 10 - session.blindDotsUsed)}
+                Dots left: {remainingDots}
               </div>
             </>
           ) : (
             <>
-              <div>All dots: {allDots.length}</div>
-              {allDots[0] && (
+              <div>All dots: {renderDots.length}</div>
+              {renderDots[0] && (
                 <div style={{ marginTop: '4px', fontSize: '10px' }}>
-                  First: x={allDots[0].x.toFixed(3)}, y={allDots[0].y.toFixed(3)}, color={allDots[0].colorHex}
+                  First: x={renderDots[0].x.toFixed(3)}, y={renderDots[0].y.toFixed(3)}, color={renderDots[0].colorHex}
                 </div>
               )}
             </>
@@ -600,7 +622,7 @@ export default function Home() {
       )}
 
       {/* Top-right Badge */}
-      {session && (
+      {state.session && (
         <div style={{
           position: 'fixed',
           top: '16px',
@@ -632,7 +654,7 @@ export default function Home() {
               width: '24px',
               height: '24px',
               borderRadius: '50%',
-              backgroundColor: session.colorHex,
+              backgroundColor: state.session.colorHex,
               border: '1px solid #e0e0e0',
               flexShrink: 0
             }} />
@@ -646,9 +668,9 @@ export default function Home() {
                 fontWeight: 500,
                 color: '#000'
               }}>
-                {session.colorHex.toUpperCase()}
+                {state.session.colorHex.toUpperCase()}
               </span>
-              {!session.revealed && (
+              {!isRevealed && (
                 <span style={{
                   fontSize: '12px',
                   color: '#666'
@@ -656,12 +678,12 @@ export default function Home() {
                   Dots left: {remainingDots}
                 </span>
               )}
-              {session.revealed && (
+              {isRevealed && (
                 <span style={{
                   fontSize: '12px',
                   color: '#666'
                 }}>
-                  Credits: {session.credits}
+                  Credits: {state.session.credits}
                 </span>
               )}
             </div>
@@ -682,7 +704,7 @@ export default function Home() {
               minWidth: '240px',
               zIndex: 51
             }}>
-              {session.revealed ? (
+              {isRevealed ? (
                 <>
                   <div style={{
                   fontSize: '14px',
@@ -697,7 +719,7 @@ export default function Home() {
                   color: '#666',
                   marginBottom: '16px'
                 }}>
-                  Current: {session.credits} credits
+                  Current: {state.session.credits} credits
                 </div>
                 <div style={{
                   display: 'flex',
@@ -770,7 +792,7 @@ export default function Home() {
       )}
 
       {/* Clickable White Screen - Only in blind mode */}
-      {session && !session.revealed && (
+      {state.session && !isRevealed && (
         <div
           ref={clickableAreaRef}
           onClick={handleClick}
@@ -787,7 +809,7 @@ export default function Home() {
       )}
 
       {/* Background - In reveal mode (behind reveal layer) */}
-      {session && session.revealed && (
+      {state.session && isRevealed && (
         <div
           style={{
             position: 'fixed',

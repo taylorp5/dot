@@ -19,7 +19,7 @@ export async function GET(request: NextRequest) {
     // Fetch dots where session_id matches
     const { data: dots, error: dotsError } = await supabaseAdmin
       .from('dots')
-      .select('x, y, color_hex, phase, created_at')
+      .select('x, y, color_hex, phase, created_at, client_dot_id')
       .eq('session_id', sessionId)
       .order('created_at', { ascending: true })
 
@@ -37,7 +37,8 @@ export async function GET(request: NextRequest) {
       y: dot.y,
       colorHex: normalizeHex(dot.color_hex),
       phase: dot.phase,
-      createdAt: dot.created_at
+      createdAt: dot.created_at,
+      clientDotId: dot.client_dot_id || undefined
     }))
 
     return NextResponse.json(dotDTOs)
