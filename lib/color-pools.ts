@@ -49,15 +49,36 @@ function isVisibleOnWhite(hex: string): boolean {
   return luminance >= 0.08 && luminance <= 0.92
 }
 
+// Helper: Calculate brightness using weighted RGB values
+// Returns value between 0 (black) and 255 (white)
+function calculateBrightness(hex: string): number | null {
+  const rgb = hexToRgb(hex)
+  if (!rgb) return null
+  
+  // brightness = 0.299*r + 0.587*g + 0.114*b
+  return 0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b
+}
+
+// Helper: Check if color is not too light or too dark
+// Rejects if brightness > 235 (too light) or brightness < 15 (too dark)
+function hasValidBrightness(hex: string): boolean {
+  const brightness = calculateBrightness(hex)
+  if (brightness === null) return false
+  
+  return brightness >= 15 && brightness <= 235
+}
+
 // Helper: Sanitize a color pool
 // 1. Normalize all hex values
 // 2. Deduplicate via Set
 // 3. Filter by visibility on white
+// 4. Filter by valid brightness (not too light or too dark)
 function sanitizePool(pool: string[]): string[] {
   const normalized = pool.map(normalizeHex)
   const deduped = Array.from(new Set(normalized))
   const visible = deduped.filter(isVisibleOnWhite)
-  return visible
+  const validBrightness = visible.filter(hasValidBrightness)
+  return validBrightness
 }
 
 // Raw color pools (before sanitization)
@@ -162,9 +183,10 @@ export function getAvailableHex(
   const normalizedUsed = usedHexes.map(normalizeHex).filter(Boolean)
   
   // Find first available hex in sanitized pool
+  // Also validate brightness to prevent near-white/near-black colors
   for (const hex of pool) {
     const normalized = normalizeHex(hex)
-    if (!normalizedUsed.includes(normalized)) {
+    if (!normalizedUsed.includes(normalized) && hasValidBrightness(normalized)) {
       return normalized
     }
   }

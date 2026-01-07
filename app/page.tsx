@@ -378,9 +378,43 @@ export default function Home() {
         </div>
       )}
 
-      {/* Reveal UI - Full screen white div with dots */}
+      {/* Reveal UI - Full screen off-white div with dots */}
       {session && session.revealed && (
-        <div className="fixed inset-0 bg-white z-10">
+        <div className="fixed inset-0 z-10" style={{ backgroundColor: '#fafafa' }}>
+          {/* Hardcoded Debug Dot */}
+          <div
+            style={{
+              position: 'absolute',
+              left: '50%',
+              top: '50%',
+              transform: 'translate(-50%, -50%)',
+              width: '18px',
+              height: '18px',
+              borderRadius: '50%',
+              backgroundColor: '#ff0000',
+              border: '2px solid #000',
+              zIndex: 9999,
+              pointerEvents: 'none'
+            }}
+          />
+          <div
+            style={{
+              position: 'absolute',
+              left: '50%',
+              top: '50%',
+              transform: 'translate(calc(-50% + 25px), -50%)',
+              fontSize: '14px',
+              fontWeight: 600,
+              color: '#000',
+              zIndex: 9999,
+              pointerEvents: 'none',
+              whiteSpace: 'nowrap'
+            }}
+          >
+            DEBUG DOT
+          </div>
+          
+          {/* Fetched Dots */}
           {revealedDots.map((dot, i) => (
             <div
               key={`${dot.sessionId}-${i}-${dot.createdAt}`}
@@ -389,10 +423,13 @@ export default function Home() {
                 left: `${dot.x * 100}%`,
                 top: `${dot.y * 100}%`,
                 transform: 'translate(-50%, -50%)',
-                width: '8px',
-                height: '8px',
+                width: '12px',
+                height: '12px',
                 borderRadius: '50%',
                 backgroundColor: dot.colorHex,
+                border: '1px solid rgba(0, 0, 0, 0.35)',
+                boxShadow: '0 0 0 1px rgba(255, 255, 255, 0.35)',
+                zIndex: 20,
                 pointerEvents: 'none'
               }}
             />
