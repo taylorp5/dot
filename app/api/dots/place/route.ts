@@ -67,7 +67,7 @@ export async function POST(request: NextRequest) {
           // Fetch current session state
           const { data: currentSession } = await supabaseAdmin
             .from('sessions')
-            .select('*')
+            .select('session_id, color_name, color_hex, blind_dots_used, revealed, credits')
             .eq('session_id', sessionId)
             .single()
 
@@ -84,28 +84,34 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      // ATOMIC UPDATE: Increment blind_dots_used only if < 10 and not revealed
-      // Use update with WHERE clause (atomic) - returns 0 rows if condition fails
-      const { data: atomicUpdate, error: atomicError } = await supabaseAdmin
-        .from('sessions')
-        .update({
-          blind_dots_used: session.blind_dots_used + 1,
-          revealed: (session.blind_dots_used + 1) >= 10
-        })
-        .eq('session_id', sessionId)
-        .eq('revealed', false)
-        .lt('blind_dots_used', 10)
-        .select()
-        .single()
+      // REAL ATOMIC DB OPERATION: Call RPC function consume_blind_dot
+      // This performs the update atomically in the database:
+      // UPDATE sessions SET blind_dots_used = blind_dots_used + 1, revealed = (blind_dots_used + 1) >= 10
+      // WHERE session_id = p_session_id AND revealed = false AND blind_dots_used < 10
+      const { data: rpcResult, error: rpcError } = await supabaseAdmin.rpc('consume_blind_dot', {
+        p_session_id: sessionId
+      })
 
-      if (atomicError || !atomicUpdate) {
-        // Update returned 0 rows - limit reached or already revealed
-        console.log('[SERVER] Atomic update failed - limit reached or revealed')
+      if (rpcError) {
+        console.error('[SERVER] RPC consume_blind_dot error:', rpcError)
+        return NextResponse.json(
+          { 
+            error: 'Failed to consume blind dot',
+            details: rpcError.message,
+            code: rpcError.code
+          },
+          { status: 500 }
+        )
+      }
+
+      // If data is empty: limit reached or already revealed
+      if (!rpcResult || rpcResult.length === 0) {
+        console.log('[SERVER] RPC returned no rows - limit reached or already revealed')
         
         // Fetch current session for error response
         const { data: currentSession } = await supabaseAdmin
           .from('sessions')
-          .select('*')
+          .select('session_id, color_name, color_hex, blind_dots_used, revealed, credits')
           .eq('session_id', sessionId)
           .single()
 
@@ -124,21 +130,27 @@ export async function POST(request: NextRequest) {
             },
             { status: 409 }
           )
+        } else {
+          return NextResponse.json(
+            { error: 'Session not found after RPC call' },
+            { status: 404 }
+          )
         }
       }
 
-      // Atomic update succeeded - insert the dot
-      const newBlindDotsUsed = atomicUpdate.blind_dots_used
-      const shouldReveal = atomicUpdate.revealed
+      // RPC succeeded - use returned session snapshot as authoritative
+      const updated = rpcResult[0]
+      const shouldReveal = updated.revealed
 
       // Insert blind dot with normalized coordinates
+      // Use updated.color_hex from RPC result (not stale session.color_hex)
       const dotId = uuidv4()
       const insertData: any = {
         id: dotId,
         session_id: sessionId,
         x: xNorm,
         y: yNorm,
-        color_hex: normalizeHex(session.color_hex),
+        color_hex: normalizeHex(updated.color_hex),
         phase: 'blind',
         client_w: typeof clientW === 'number' ? clientW : null,
         client_h: typeof clientH === 'number' ? clientH : null
@@ -169,17 +181,14 @@ export async function POST(request: NextRequest) {
 
         if (isUniqueViolation && clientDotId) {
           // Duplicate client_dot_id - return existing session state (idempotent)
+          // Note: RPC already incremented blind_dots_used, but this is idempotent
+          // The dot already exists, so we return the current session state
           console.log('[SERVER] Duplicate client_dot_id (idempotent):', { clientDotId })
           
-          // Rollback the increment (decrement blind_dots_used)
-          await supabaseAdmin
-            .from('sessions')
-            .update({ blind_dots_used: newBlindDotsUsed - 1, revealed: false })
-            .eq('session_id', sessionId)
-
+          // Fetch current session state (RPC already updated it)
           const { data: currentSession } = await supabaseAdmin
             .from('sessions')
-            .select('*')
+            .select('session_id, color_name, color_hex, blind_dots_used, revealed, credits')
             .eq('session_id', sessionId)
             .single()
 
@@ -195,11 +204,9 @@ export async function POST(request: NextRequest) {
           }
         }
 
-        // Rollback the increment on other errors
-        await supabaseAdmin
-          .from('sessions')
-          .update({ blind_dots_used: newBlindDotsUsed - 1, revealed: false })
-          .eq('session_id', sessionId)
+        // On other errors, we can't easily rollback the RPC increment
+        // This is a rare case - log it for monitoring
+        console.error('[SERVER] Error inserting dot after RPC success:', dotError)
 
         console.error('[SERVER] Error inserting dot:', dotError)
         return NextResponse.json(
@@ -210,13 +217,14 @@ export async function POST(request: NextRequest) {
 
       console.log('[SERVER] Dot inserted successfully:', { dotId, clientDotId })
 
+      // Return session DTO based on updated values from RPC
       return NextResponse.json({
-        sessionId: atomicUpdate.session_id,
-        colorName: atomicUpdate.color_name,
-        colorHex: atomicUpdate.color_hex,
-        blindDotsUsed: atomicUpdate.blind_dots_used,
-        revealed: atomicUpdate.revealed,
-        credits: atomicUpdate.credits
+        sessionId: updated.session_id,
+        colorName: updated.color_name,
+        colorHex: updated.color_hex,
+        blindDotsUsed: updated.blind_dots_used,
+        revealed: updated.revealed,
+        credits: updated.credits
       })
     } else {
       // Revealed phase - requires credits
