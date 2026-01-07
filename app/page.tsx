@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import styles from './page.module.css'
 import { STRIPE_PRICES } from '@/lib/stripe-prices'
 import { COLOR_SWATCHES } from '@/lib/color-swatches'
@@ -21,37 +21,19 @@ interface Dot {
   colorHex: string
   phase: 'blind' | 'paid'
   createdAt: string
-  clientDotId?: string // For optimistic UI reconciliation
-}
-
-interface BufferedDot {
-  x: number
-  y: number
-  clientDotId: string
 }
 
 export default function Home() {
-  const [serverSession, setServerSession] = useState<Session | null>(null) // Server state (source of truth)
+  const [session, setSession] = useState<Session | null>(null)
   const [localDots, setLocalDots] = useState<Dot[]>([]) // Blind phase dots (optimistic + confirmed)
   const [revealedDots, setRevealedDots] = useState<Dot[]>([]) // All dots after reveal
-  
-  // Derived: isRevealed from serverSession.revealed
-  const isRevealed = serverSession?.revealed ?? false
+  const [isRevealed, setIsRevealed] = useState(false)
   const [isLoadingPurchase, setIsLoadingPurchase] = useState(false)
   const [isSelectingColor, setIsSelectingColor] = useState(false)
-  const [showPurchasePanel, setShowPurchasePanel] = useState(false)
-  const [dotBuffer, setDotBuffer] = useState<BufferedDot[]>([]) // Buffer of dots to send in batch
-  const [isFlushing, setIsFlushing] = useState(false) // Track if batch flush is in progress
-  const [isRevealing, setIsRevealing] = useState(false) // Track if reveal is in progress
-  const flushTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const [showPurchaseModal, setShowPurchaseModal] = useState(false)
+  const [isPlacing, setIsPlacing] = useState(false) // Lock to prevent duplicate placements
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const canvasContainerRef = useRef<HTMLDivElement>(null)
-  
-  const BUFFER_FLUSH_SIZE = 5
-  const BUFFER_FLUSH_DEBOUNCE_MS = 300
-  
-  // Alias for backward compatibility
-  const session = serverSession
 
   // Setup canvas with DPR scaling
   useEffect(() => {
@@ -118,94 +100,48 @@ export default function Home() {
     })
   }
 
-  // Load session from localStorage on mount and fetch from API
+  // Load session from localStorage on mount
   useEffect(() => {
-    const loadSession = async () => {
-      // Read sessionId from localStorage
-      const sessionId = localStorage.getItem('justadot_session_id')
-      
-      // Add temporary client logs
-      console.log('[boot] sessionId from storage', sessionId)
-      
-      if (!sessionId) {
-        // No sessionId in localStorage - show color picker
-        setIsSelectingColor(true)
-        return
-      }
-
+    const savedSession = localStorage.getItem('dotSession')
+    if (savedSession) {
       try {
-        // Fetch session from API to get latest state
-        const response = await fetch(`/api/session/get?sessionId=${sessionId}`)
-        const data = await response.json()
-
-        if (!response.ok) {
-          // Session not found (404) or other error - clear localStorage and show color picker
-          if (response.status === 404) {
-            localStorage.removeItem('justadot_session_id')
-          }
-          setIsSelectingColor(true)
-          return
-        }
-
-        // Set session state immediately
-        const restoredSession: Session = {
-          sessionId: data.sessionId,
-          colorName: data.colorName,
-          colorHex: data.colorHex,
-          blindDotsUsed: data.blindDotsUsed,
-          revealed: data.revealed,
-          credits: data.credits
-        }
-
-        setServerSession(restoredSession)
+        const parsed = JSON.parse(savedSession)
+        setSession(parsed)
+        setIsRevealed(parsed.revealed)
         
-        // Add temporary client logs
-        console.log('[boot] serverSession', restoredSession)
-
-        // If revealed, fetch all dots
-        if (restoredSession.revealed) {
-          fetchAllDots(restoredSession.sessionId)
+        // If revealed, always fetch all dots
+        if (parsed.revealed) {
+          fetchAllDots(parsed.sessionId)
         }
-
-        // Check for Stripe success redirect
-        const params = new URLSearchParams(window.location.search)
-        const success = params.get('success')
-
-        if (success === '1') {
-          // Refetch session to get updated credits after Stripe payment
-          const refreshResponse = await fetch(`/api/session/get?sessionId=${sessionId}`)
-          const refreshData = await refreshResponse.json()
-
-          if (refreshResponse.ok) {
-            const updatedSession: Session = {
-              sessionId: refreshData.sessionId,
-              colorName: refreshData.colorName,
-              colorHex: refreshData.colorHex,
-              blindDotsUsed: refreshData.blindDotsUsed,
-              revealed: refreshData.revealed,
-              credits: refreshData.credits
-            }
-
-            setServerSession(updatedSession)
-          }
-
-          // Clean up URL param
-          window.history.replaceState({}, '', window.location.pathname)
-        } else {
-          // Clean up any other query params
-          const canceled = params.get('canceled')
-          if (canceled === '1') {
-            window.history.replaceState({}, '', window.location.pathname)
-          }
-        }
+        // If not revealed, canvas stays blank (localDots starts empty)
       } catch (e) {
         console.error('Error loading session:', e)
-        setIsSelectingColor(true)
       }
+    } else {
+      setIsSelectingColor(true)
     }
-
-    loadSession()
   }, [])
+
+  // Handle success/cancel redirects from Stripe
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    
+    const params = new URLSearchParams(window.location.search)
+    const success = params.get('success')
+    const canceled = params.get('canceled')
+
+    if (success === '1' && session) {
+      // Refetch session to get updated credits
+      fetchSessionSnapshot(session.sessionId)
+      // Clean up URL
+      window.history.replaceState({}, '', window.location.pathname)
+    } else if (canceled === '1') {
+      // User canceled - could show a message if needed
+      console.log('Payment canceled')
+      // Clean up URL
+      window.history.replaceState({}, '', window.location.pathname)
+    }
+  }, [session])
 
   const initSession = async (colorName: string) => {
     setIsSelectingColor(false)
@@ -234,9 +170,9 @@ export default function Home() {
         credits: data.credits
       }
 
-      setServerSession(newSession)
-      // Store only sessionId in localStorage
-      localStorage.setItem('justadot_session_id', newSession.sessionId)
+      setSession(newSession)
+      setIsRevealed(newSession.revealed)
+      localStorage.setItem('dotSession', JSON.stringify(newSession))
     } catch (error) {
       console.error('Error initializing session:', error)
       alert('Failed to initialize session')
@@ -244,309 +180,146 @@ export default function Home() {
     }
   }
 
-  // Calculate remaining dots: purely derived from serverSession + buffer.length (computed every render)
-  const remainingDots = serverSession && !isRevealed
-    ? Math.max(0, 10 - serverSession.blindDotsUsed - dotBuffer.length)
+  // Calculate remaining dots from server state (single source of truth)
+  const remainingDots = session 
+    ? Math.max(0, 10 - session.blindDotsUsed)
     : 0
 
-  // Instrumentation: log countdown inputs each render
-  useEffect(() => {
-    if (serverSession && !isRevealed) {
-      console.log('[COUNTDOWN]', {
-        blindDotsUsed: serverSession.blindDotsUsed,
-        bufferLength: dotBuffer.length,
-        remainingDots
+  const handlePointerDown = async (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!session || !canvasRef.current || isPlacing) {
+      console.log('[CLIENT] Ignoring pointerdown:', { 
+        hasSession: !!session, 
+        hasCanvas: !!canvasRef.current, 
+        isPlacing 
       })
-    }
-  }, [serverSession?.blindDotsUsed, dotBuffer.length, remainingDots, isRevealed])
-
-  // Auto-fetch all dots when revealed becomes true
-  useEffect(() => {
-    if (!serverSession?.revealed || !serverSession?.sessionId) return
-    
-    fetch(`/api/dots/all?sessionId=${serverSession.sessionId}`)
-      .then(r => r.json())
-      .then(data => {
-        if (Array.isArray(data)) {
-          setRevealedDots(data)
-        }
-      })
-      .catch(error => {
-        console.error('[CLIENT] Error fetching all dots on reveal:', error)
-      })
-  }, [serverSession?.revealed, serverSession?.sessionId])
-
-  // Flush buffer: send buffered dots to server in batch
-  const flushBuffer = useCallback(async () => {
-    if (!serverSession || dotBuffer.length === 0 || isFlushing) {
       return
     }
 
-    setIsFlushing(true)
-    const bufferToSend = [...dotBuffer]
-    setDotBuffer([]) // Clear buffer immediately
+    // Prevent placement if no dots remaining and not revealed
+    if (!isRevealed && remainingDots === 0) {
+      console.log('[CLIENT] No dots remaining, ignoring click')
+      return
+    }
+
+    // PERMANENT FIX: Use canvas.getBoundingClientRect() for accurate coordinates
+    const rect = canvasRef.current.getBoundingClientRect()
+    // Compute normalized coordinates [0,1]
+    let xNorm = (e.clientX - rect.left) / rect.width
+    let yNorm = (e.clientY - rect.top) / rect.height
+    
+    // Clamp to [0,1] (client-side validation before sending)
+    xNorm = Math.max(0, Math.min(1, xNorm))
+    yNorm = Math.max(0, Math.min(1, yNorm))
+
+    console.log('[CLIENT] Placing dot:', { 
+      sessionId: session.sessionId, 
+      remaining: remainingDots, 
+      isPlacing: false,
+      x: xNorm, 
+      y: yNorm 
+    })
+
+    // Set lock immediately to prevent duplicate requests
+    setIsPlacing(true)
+
+    // Optimistic UI: Add dot immediately to localDots (only in blind phase)
+    const optimisticDot: Dot = {
+      sessionId: session.sessionId,
+      x: xNorm,
+      y: yNorm,
+      colorHex: session.colorHex,
+      phase: 'blind',
+      createdAt: new Date().toISOString()
+    }
+
+    if (!isRevealed) {
+      setLocalDots(prev => [...prev, optimisticDot])
+    }
 
     try {
-      const response = await fetch('/api/dots/place-batch', {
+      const response = await fetch('/api/dots/place', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          sessionId: serverSession.sessionId,
-          dots: bufferToSend
+          sessionId: session.sessionId,
+          x: xNorm,
+          y: yNorm,
+          clientW: rect.width,  // Optional: for debugging/auditing
+          clientH: rect.height  // Optional: for debugging/auditing
         })
       })
 
       const data = await response.json()
 
       if (!response.ok) {
-        // Handle NO_FREE_DOTS (409) - authoritative signal that blind phase is over
-        if (response.status === 409 && data.error === 'NO_FREE_DOTS') {
-          console.log('[CLIENT] NO_FREE_DOTS - triggering reveal sequence')
-          
-          // Stop accepting clicks (buffer is already cleared)
-          // Trigger reveal sequence
-          if (data.session) {
-            const updatedSession: Session = {
-              sessionId: data.session.sessionId,
-              colorName: data.session.colorName,
-              colorHex: data.session.colorHex,
-              blindDotsUsed: data.session.blindDotsUsed,
-              revealed: data.session.revealed,
-              credits: data.session.credits
-            }
-            setServerSession(updatedSession)
-          }
-          
-          await triggerReveal(serverSession.sessionId)
-          
-          // Rollback optimistic dots that weren't accepted
-          if (!isRevealed) {
-            const acceptedIds = new Set((data.accepted || []).map((d: any) => d.clientDotId))
-            setLocalDots(prev => prev.filter(dot => 
-              dot.sessionId !== serverSession.sessionId || 
-              dot.phase !== 'blind' ||
-              acceptedIds.has(dot.clientDotId)
-            ))
-          }
-          return
-        }
-
-        // Handle INSUFFICIENT_CREDITS (400) - silently ignore
-        if (response.status === 400 && data.error === 'INSUFFICIENT_CREDITS') {
-          // Update session state
-          if (data.session) {
-            const updatedSession: Session = {
-              sessionId: data.session.sessionId,
-              colorName: data.session.colorName,
-              colorHex: data.session.colorHex,
-              blindDotsUsed: data.session.blindDotsUsed,
-              revealed: data.session.revealed,
-              credits: data.session.credits
-            }
-            setServerSession(updatedSession)
-          }
-          // Silently stop accepting clicks (no error logging)
-          return
-        }
-
-        // Other errors: rollback optimistic dots
+        // Remove optimistic dot on failure
         if (!isRevealed) {
-          const acceptedIds = new Set((data.acceptedDots || []).map((d: any) => d.clientDotId))
-          setLocalDots(prev => prev.filter(dot => 
-            dot.sessionId !== serverSession.sessionId || 
-            dot.phase !== 'blind' ||
-            acceptedIds.has(dot.clientDotId)
-          ))
+          setLocalDots(prev => prev.slice(0, -1))
         }
+        
+        // Handle NO_FREE_DOTS error silently (no alert)
+        if (response.status === 409 && data.error === 'NO_FREE_DOTS') {
+          console.log('[CLIENT] No free dots left, server confirmed')
+          // Update session from response if provided
+          if (data.session) {
+            const updatedSession: Session = {
+              sessionId: data.session.sessionId,
+              colorName: data.session.colorName,
+              colorHex: data.session.colorHex,
+              blindDotsUsed: data.session.blindDotsUsed,
+              revealed: data.session.revealed,
+              credits: data.session.credits
+            }
+            setSession(updatedSession)
+            setIsRevealed(updatedSession.revealed)
+            localStorage.setItem('dotSession', JSON.stringify(updatedSession))
+          }
+        } else {
+          // Other errors: show alert
+          alert(data.error || 'Failed to place dot')
+        }
+        setIsPlacing(false)
         return
       }
 
-      // Success: update serverSession from response (source of truth)
-      // Response includes full session DTO: { sessionId, colorName, colorHex, blindDotsUsed, revealed, credits }
+      // Update session from server response (single source of truth)
       const updatedSession: Session = {
-        sessionId: data.session.sessionId,
-        colorName: data.session.colorName || serverSession?.colorName || '',
-        colorHex: data.session.colorHex,
-        blindDotsUsed: data.session.blindDotsUsed,
-        revealed: data.session.revealed,
-        credits: data.session.credits
+        sessionId: data.sessionId,
+        colorName: data.colorName,
+        colorHex: data.colorHex,
+        blindDotsUsed: data.blindDotsUsed,
+        revealed: data.revealed,
+        credits: data.credits
       }
 
-      // Prevent out-of-order overwrites: only accept if blindDotsUsed >= current
-      setServerSession(prev => {
-        if (!prev || updatedSession.blindDotsUsed >= prev.blindDotsUsed) {
-          return updatedSession
-        }
-        return prev
+      console.log('[CLIENT] Dot placed successfully:', {
+        sessionId: updatedSession.sessionId,
+        blindDotsUsed: updatedSession.blindDotsUsed,
+        revealed: updatedSession.revealed,
+        remaining: Math.max(0, 10 - updatedSession.blindDotsUsed)
       })
 
-      // Remove optimistic dots that weren't accepted
-      if (!isRevealed) {
-        const acceptedIds = new Set((data.acceptedDots || []).map((d: any) => d.clientDotId))
-        setLocalDots(prev => prev.filter(dot => 
-          dot.sessionId !== serverSession.sessionId || 
-          dot.phase !== 'blind' ||
-          acceptedIds.has(dot.clientDotId)
-        ))
-      }
+      setSession(updatedSession)
+      setIsRevealed(updatedSession.revealed)
+      localStorage.setItem('dotSession', JSON.stringify(updatedSession))
 
-      // Auto-reveal: if revealed became true (or blindDotsUsed >= 10), fetch all dots
-      // Important: do NOT call /api/dots/all before session.revealed is true
-      if (updatedSession.revealed) {
-        if (!serverSession.revealed) {
-          console.log('[CLIENT] Auto-revealing (revealed === true), fetching all dots')
-          setLocalDots([]) // Clear local dots
-        }
-        // Fetch all dots - session is revealed
+      // Handle auto-reveal: when blind dots reach 10, fetch all dots
+      if (!session.revealed && updatedSession.revealed) {
+        console.log('[CLIENT] Auto-revealing, fetching all dots')
+        setLocalDots([]) // Clear local dots
+        // Wait for fetch to complete before unlocking
         await fetchAllDots(updatedSession.sessionId)
-      } else if (updatedSession.blindDotsUsed >= 10 && !updatedSession.revealed) {
-        // Edge case: blindDotsUsed >= 10 but revealed not set yet
-        // This shouldn't happen if server logic is correct, but handle it anyway
-        console.log('[CLIENT] Blind dots complete but not revealed, triggering reveal sequence')
-        await triggerReveal(updatedSession.sessionId)
       }
+      
+      setIsPlacing(false)
     } catch (error) {
-      console.error('[CLIENT] Error flushing buffer:', error)
-      // On error, keep buffer (it was already cleared, so restore it)
-      setDotBuffer(bufferToSend)
-    } finally {
-      setIsFlushing(false)
-    }
-  }, [serverSession, isRevealed])
-
-  // Debounced flush: send buffer after debounce period or when buffer reaches size limit
-  useEffect(() => {
-    // Clear existing timeout
-    if (flushTimeoutRef.current) {
-      clearTimeout(flushTimeoutRef.current)
-      flushTimeoutRef.current = null
-    }
-
-    // If buffer is empty or flushing, do nothing
-    if (dotBuffer.length === 0 || isFlushing || !serverSession) {
-      return
-    }
-
-    // If buffer reaches size limit, flush immediately
-    if (dotBuffer.length >= BUFFER_FLUSH_SIZE) {
-      flushBuffer()
-      return
-    }
-
-    // Otherwise, set debounced flush
-    flushTimeoutRef.current = setTimeout(() => {
-      flushBuffer()
-    }, BUFFER_FLUSH_DEBOUNCE_MS)
-
-    return () => {
-      if (flushTimeoutRef.current) {
-        clearTimeout(flushTimeoutRef.current)
-        flushTimeoutRef.current = null
+      // Remove optimistic dot on error
+      if (!isRevealed) {
+        setLocalDots(prev => prev.slice(0, -1))
       }
-    }
-  }, [dotBuffer.length, isFlushing, serverSession?.sessionId, flushBuffer])
-
-  const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!serverSession || !canvasRef.current || isRevealing || isFlushing) {
-      return
-    }
-
-    // Strict state machine: gate clicks based on phase
-    if (!isRevealed) {
-      // Blind phase: only allow if remaining dots > 0 (accounting for buffer)
-      if (remainingDots === 0) {
-        // Silently ignore - no dots remaining
-        return
-      }
-    } else {
-      // Revealed phase: only allow if credits > 0
-      if (serverSession.credits <= 0) {
-        // Silently ignore - no credits
-        return
-      }
-    }
-
-    // Compute normalized coordinates
-    const rect = canvasRef.current.getBoundingClientRect()
-    let xNorm = (e.clientX - rect.left) / rect.width
-    let yNorm = (e.clientY - rect.top) / rect.height
-    xNorm = Math.max(0, Math.min(1, xNorm))
-    yNorm = Math.max(0, Math.min(1, yNorm))
-
-    // Generate client dot ID for idempotency
-    const clientDotId = crypto.randomUUID()
-
-    // Optimistic UI: immediately append dot to localDots (only in blind phase)
-    if (!isRevealed) {
-      const optimisticDot: Dot = {
-        sessionId: serverSession.sessionId,
-        x: xNorm,
-        y: yNorm,
-        colorHex: serverSession.colorHex,
-        phase: 'blind',
-        createdAt: new Date().toISOString(),
-        clientDotId
-      }
-      setLocalDots(prev => [...prev, optimisticDot])
-    }
-
-    // Add to buffer (will be flushed via debounce or size limit)
-    setDotBuffer(prev => [...prev, { x: xNorm, y: yNorm, clientDotId }])
-  }
-
-  // Reveal sequence: POST /api/session/reveal → GET /api/session/get → GET /api/dots/all
-  const triggerReveal = async (sessionId: string) => {
-    if (isRevealing) {
-      console.log('[CLIENT] Reveal already in progress, skipping')
-      return
-    }
-
-    setIsRevealing(true)
-    try {
-      // Step 1: POST /api/session/reveal
-      const revealResponse = await fetch('/api/session/reveal', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId })
-      })
-
-      if (!revealResponse.ok) {
-        const revealData = await revealResponse.json()
-        console.error('[CLIENT] Reveal failed:', revealData.error)
-        setIsRevealing(false)
-        return
-      }
-
-      // Step 2: GET /api/session/get to refresh session state
-      const sessionResponse = await fetch(`/api/session/get?sessionId=${sessionId}`)
-      const sessionData = await sessionResponse.json()
-
-      if (!sessionResponse.ok) {
-        console.error('[CLIENT] Failed to refresh session after reveal:', sessionData.error)
-        setIsRevealing(false)
-        return
-      }
-
-      // Update session state
-      const refreshedSession: Session = {
-        sessionId: sessionData.sessionId,
-        colorName: sessionData.colorName,
-        colorHex: sessionData.colorHex,
-        blindDotsUsed: sessionData.blindDotsUsed,
-        revealed: sessionData.revealed,
-        credits: sessionData.credits
-      }
-
-      setServerSession(refreshedSession)
-
-      // Step 3: Only after revealed is confirmed true, fetch all dots
-      if (refreshedSession.revealed) {
-        await fetchAllDots(sessionId)
-      }
-    } catch (error) {
-      console.error('[CLIENT] Error in reveal sequence:', error)
-    } finally {
-      setIsRevealing(false)
+      console.error('[CLIENT] Error placing dot:', error)
+      alert('Failed to place dot')
+      setIsPlacing(false)
     }
   }
 
@@ -556,23 +329,7 @@ export default function Home() {
       const data = await response.json()
 
       if (!response.ok) {
-        // If 403, session might not be revealed yet - retry after fetching session state
-        if (response.status === 403) {
-          console.log('[CLIENT] 403 from /api/dots/all, fetching session state and retrying')
-          const sessionResponse = await fetch(`/api/session/get?sessionId=${sessionId}`)
-          const sessionData = await sessionResponse.json()
-          
-          if (sessionResponse.ok && sessionData.revealed) {
-            // Retry fetching dots
-            const retryResponse = await fetch(`/api/dots/all?sessionId=${sessionId}`)
-            const retryData = await retryResponse.json()
-            if (retryResponse.ok) {
-              setRevealedDots(retryData)
-            }
-          }
-        } else {
-          console.error('Error fetching dots:', data.error)
-        }
+        console.error('Error fetching dots:', data.error)
         return
       }
 
@@ -584,7 +341,7 @@ export default function Home() {
 
   const fetchSessionSnapshot = async (sessionId: string) => {
     try {
-      const response = await fetch(`/api/session/get?sessionId=${sessionId}`)
+      const response = await fetch(`/api/session?sessionId=${sessionId}`)
       const data = await response.json()
 
       if (!response.ok) {
@@ -601,7 +358,9 @@ export default function Home() {
         credits: data.credits
       }
 
-      setServerSession(updatedSession)
+      setSession(updatedSession)
+      setIsRevealed(updatedSession.revealed)
+      localStorage.setItem('dotSession', JSON.stringify(updatedSession))
     } catch (error) {
       console.error('Error fetching session snapshot:', error)
     }
@@ -656,15 +415,15 @@ export default function Home() {
           <div className={styles.modal}>
             <h2 className={styles.modalTitle}>Choose your color</h2>
             <div className={styles.swatchGrid}>
-                  {COLOR_SWATCHES.map((swatch) => (
-                    <button
-                      key={swatch.name}
-                      className={styles.swatch}
-                      onClick={() => initSession(swatch.name.toLowerCase())}
-                      style={{ backgroundColor: swatch.hex }}
-                      aria-label={swatch.name}
-                    />
-                  ))}
+              {COLOR_SWATCHES.map((swatch) => (
+                <button
+                  key={swatch.name}
+                  className={styles.swatch}
+                  onClick={() => initSession(swatch.name.toLowerCase())} // Send lowercase canonical name
+                  style={{ backgroundColor: swatch.hex }}
+                  aria-label={swatch.name}
+                />
+              ))}
             </div>
           </div>
         </div>
@@ -675,10 +434,10 @@ export default function Home() {
         <button 
           className={styles.badge}
           onClick={() => {
-            // Always toggle panel, but panel content only shows when revealed
-            setShowPurchasePanel(prev => !prev)
+            if (isRevealed) {
+              setShowPurchaseModal(true)
+            }
           }}
-          type="button"
         >
           <div 
             className={styles.badgeSwatch}
@@ -702,48 +461,36 @@ export default function Home() {
         </button>
       )}
 
-      {/* Purchase Panel (Popover) */}
-      {showPurchasePanel && session && (
-        <>
-          {/* Click-outside overlay */}
-          <div 
-            className={styles.panelOverlay}
-            onClick={() => setShowPurchasePanel(false)}
-          />
-          {/* Purchase Panel */}
-          <div className={styles.purchasePanel}>
-            <div className={styles.purchasePanelHeader}>
-              <h3 className={styles.purchasePanelTitle}>Buy Credits</h3>
+      {/* Purchase Modal */}
+      {showPurchaseModal && session && isRevealed && (
+        <div className={styles.modalOverlay} onClick={() => setShowPurchaseModal(false)}>
+          <div className={styles.purchaseModal} onClick={(e) => e.stopPropagation()}>
+            <div className={styles.purchaseModalHeader}>
+              <h3 className={styles.purchaseModalTitle}>Buy Credits</h3>
               <button 
-                className={styles.purchasePanelClose}
-                onClick={() => setShowPurchasePanel(false)}
+                className={styles.purchaseModalClose}
+                onClick={() => setShowPurchaseModal(false)}
               >
                 ×
               </button>
             </div>
-            <div className={styles.purchasePanelContent}>
-              {isRevealed ? (
-                <>
-                  <p className={styles.currentCredits}>Current Credits: {session.credits}</p>
-                  <div className={styles.creditButtons}>
-                    {creditBundles.map((bundle) => (
-                      <button
-                        key={bundle.priceId}
-                        onClick={() => purchaseCredits(bundle.priceId)}
-                        disabled={isLoadingPurchase}
-                        className={styles.creditButton}
-                      >
-                        {bundle.label}
-                      </button>
-                    ))}
-                  </div>
-                </>
-              ) : (
-                <p className={styles.currentCredits}>Complete 10 dots to unlock credit purchases</p>
-              )}
+            <div className={styles.purchaseModalContent}>
+              <p className={styles.currentCredits}>Current Credits: {session.credits}</p>
+              <div className={styles.creditButtons}>
+                {creditBundles.map((bundle) => (
+                  <button
+                    key={bundle.priceId}
+                    onClick={() => purchaseCredits(bundle.priceId)}
+                    disabled={isLoadingPurchase}
+                    className={styles.creditButton}
+                  >
+                    {bundle.label}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
-        </>
+        </div>
       )}
 
       {/* Full Viewport Canvas */}
