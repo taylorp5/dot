@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from 'react'
 import styles from './page.module.css'
 import { STRIPE_PRICES } from '@/lib/stripe-prices'
 import { COLOR_SWATCHES } from '@/lib/color-swatches'
+import Canvas from './components/Canvas'
 
 interface Session {
   sessionId: string
@@ -32,76 +33,8 @@ export default function Home() {
   const [isSelectingColor, setIsSelectingColor] = useState(false)
   const [showPurchaseModal, setShowPurchaseModal] = useState(false)
   const [isPlacing, setIsPlacing] = useState(false) // Lock to prevent duplicate placements
-  const canvasRef = useRef<HTMLCanvasElement>(null)
-  const canvasContainerRef = useRef<HTMLDivElement>(null)
+  const canvasContainerRef = useRef<HTMLDivElement>(null) // For click coordinate calculation
 
-  // Setup canvas with DPR scaling
-  useEffect(() => {
-    const canvas = canvasRef.current
-    const container = canvasContainerRef.current
-    if (!canvas || !container) return
-
-    const setupCanvas = () => {
-      const rect = container.getBoundingClientRect()
-      const cssW = rect.width
-      const cssH = rect.height
-      const dpr = window.devicePixelRatio || 1
-
-      // Set canvas size accounting for DPR
-      canvas.width = Math.floor(cssW * dpr)
-      canvas.height = Math.floor(cssH * dpr)
-      
-      // Set CSS size to match container
-      canvas.style.width = `${cssW}px`
-      canvas.style.height = `${cssH}px`
-
-      // Scale context to handle DPR
-      const ctx = canvas.getContext('2d')
-      if (ctx) {
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-        redrawCanvas(ctx, cssW, cssH)
-      }
-    }
-
-    setupCanvas()
-    window.addEventListener('resize', setupCanvas)
-    return () => window.removeEventListener('resize', setupCanvas)
-  }, [localDots, revealedDots, isRevealed])
-
-  // Redraw canvas when dots change
-  useEffect(() => {
-    const canvas = canvasRef.current
-    const container = canvasContainerRef.current
-    if (!canvas || !container) return
-
-    const rect = container.getBoundingClientRect()
-    const ctx = canvas.getContext('2d')
-    if (ctx) {
-      redrawCanvas(ctx, rect.width, rect.height)
-    }
-  }, [localDots, revealedDots, isRevealed])
-
-  const redrawCanvas = (ctx: CanvasRenderingContext2D, cssW: number, cssH: number) => {
-    // Clear canvas
-    ctx.clearRect(0, 0, cssW, cssH)
-
-    // Determine which dots to draw
-    // When revealed: use revealedDots (ALL dots from server, including current user's)
-    // When blind: use localDots (only current user's optimistic dots)
-    const dotsToDraw = isRevealed ? revealedDots : localDots
-
-    // Draw all dots using normalized coordinates and camelCase field names
-    dotsToDraw.forEach((dot) => {
-      // Convert normalized [0,1] coordinates to pixel positions
-      const px = dot.x * cssW
-      const py = dot.y * cssH
-
-      ctx.beginPath()
-      ctx.arc(px, py, 3, 0, Math.PI * 2)
-      ctx.fillStyle = dot.colorHex // Use camelCase colorHex field
-      ctx.fill()
-    })
-  }
 
   // Load session from localStorage on mount
   useEffect(() => {
@@ -188,11 +121,11 @@ export default function Home() {
     ? Math.max(0, 10 - session.blindDotsUsed)
     : 0
 
-  const handlePointerDown = async (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!session || !canvasRef.current || isPlacing) {
+  const handlePointerDown = async (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!session || !canvasContainerRef.current || isPlacing) {
       console.log('[CLIENT] Ignoring pointerdown:', { 
         hasSession: !!session, 
-        hasCanvas: !!canvasRef.current, 
+        hasContainer: !!canvasContainerRef.current, 
         isPlacing 
       })
       return
@@ -204,8 +137,8 @@ export default function Home() {
       return
     }
 
-    // PERMANENT FIX: Use canvas.getBoundingClientRect() for accurate coordinates
-    const rect = canvasRef.current.getBoundingClientRect()
+    // PERMANENT FIX: Use container.getBoundingClientRect() for accurate coordinates
+    const rect = canvasContainerRef.current.getBoundingClientRect()
     // Compute normalized coordinates [0,1]
     let xNorm = (e.clientX - rect.left) / rect.width
     let yNorm = (e.clientY - rect.top) / rect.height
@@ -349,6 +282,7 @@ export default function Home() {
       // The filter below is ONLY for logging/counting purposes
       const userDotsCount = data.filter((dot: Dot) => dot.sessionId === sessionId).length
       
+      console.log('[reveal] dots fetched', data.length, data[0])
       console.log('[CLIENT] Fetched dots:', {
         count: data.length,
         phases: data.reduce((acc: Record<string, number>, dot: Dot) => {
@@ -535,17 +469,41 @@ export default function Home() {
         </div>
       )}
 
+      {/* Debug Counter */}
+      {session && (
+        <div
+          style={{
+            position: 'fixed',
+            top: '16px',
+            left: '16px',
+            zIndex: 100,
+            background: 'rgba(0, 0, 0, 0.7)',
+            color: '#fff',
+            padding: '8px 12px',
+            borderRadius: '8px',
+            fontSize: '12px',
+            fontFamily: 'monospace'
+          }}
+        >
+          Rendered: {isRevealed ? revealedDots.length : localDots.length}
+        </div>
+      )}
+
       {/* Full Viewport Canvas */}
       {session && (
         <div
           ref={canvasContainerRef}
-          className={styles.canvasContainer}
+          onPointerDown={handlePointerDown}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            width: '100vw',
+            height: '100vh',
+            overflow: 'hidden',
+            zIndex: 1
+          }}
         >
-          <canvas
-            ref={canvasRef}
-            className={styles.canvas}
-            onPointerDown={handlePointerDown}
-          />
+          <Canvas dots={isRevealed ? revealedDots : localDots} />
         </div>
       )}
     </>
