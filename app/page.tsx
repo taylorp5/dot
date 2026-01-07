@@ -24,27 +24,79 @@ interface Dot {
 
 export default function Home() {
   const [session, setSession] = useState<Session | null>(null)
-  const [dots, setDots] = useState<Dot[]>([])
+  const [localDots, setLocalDots] = useState<Dot[]>([]) // Blind phase dots (optimistic + confirmed)
+  const [revealedDots, setRevealedDots] = useState<Dot[]>([]) // All dots after reveal
   const [isRevealed, setIsRevealed] = useState(false)
   const [isLoadingPurchase, setIsLoadingPurchase] = useState(false)
   const [isSelectingColor, setIsSelectingColor] = useState(false)
   const [showPurchaseModal, setShowPurchaseModal] = useState(false)
-  const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 })
-  const canvasRef = useRef<HTMLDivElement>(null)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const canvasContainerRef = useRef<HTMLDivElement>(null)
 
-  // Update canvas size on mount and resize
+  // Setup canvas with DPR scaling
   useEffect(() => {
-    const updateCanvasSize = () => {
-      if (canvasRef.current) {
-        const rect = canvasRef.current.getBoundingClientRect()
-        setCanvasSize({ width: rect.width, height: rect.height })
+    const canvas = canvasRef.current
+    const container = canvasContainerRef.current
+    if (!canvas || !container) return
+
+    const setupCanvas = () => {
+      const rect = container.getBoundingClientRect()
+      const cssW = rect.width
+      const cssH = rect.height
+      const dpr = window.devicePixelRatio || 1
+
+      // Set canvas size accounting for DPR
+      canvas.width = Math.floor(cssW * dpr)
+      canvas.height = Math.floor(cssH * dpr)
+      
+      // Set CSS size to match container
+      canvas.style.width = `${cssW}px`
+      canvas.style.height = `${cssH}px`
+
+      // Scale context to handle DPR
+      const ctx = canvas.getContext('2d')
+      if (ctx) {
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+        redrawCanvas(ctx, cssW, cssH)
       }
     }
 
-    updateCanvasSize()
-    window.addEventListener('resize', updateCanvasSize)
-    return () => window.removeEventListener('resize', updateCanvasSize)
-  }, [])
+    setupCanvas()
+    window.addEventListener('resize', setupCanvas)
+    return () => window.removeEventListener('resize', setupCanvas)
+  }, [localDots, revealedDots, isRevealed])
+
+  // Redraw canvas when dots change
+  useEffect(() => {
+    const canvas = canvasRef.current
+    const container = canvasContainerRef.current
+    if (!canvas || !container) return
+
+    const rect = container.getBoundingClientRect()
+    const ctx = canvas.getContext('2d')
+    if (ctx) {
+      redrawCanvas(ctx, rect.width, rect.height)
+    }
+  }, [localDots, revealedDots, isRevealed])
+
+  const redrawCanvas = (ctx: CanvasRenderingContext2D, cssW: number, cssH: number) => {
+    // Clear canvas
+    ctx.clearRect(0, 0, cssW, cssH)
+
+    // Determine which dots to draw
+    const dotsToDraw = isRevealed ? revealedDots : localDots
+
+    // Draw all dots
+    dotsToDraw.forEach((dot) => {
+      const px = dot.x * cssW
+      const py = dot.y * cssH
+
+      ctx.beginPath()
+      ctx.arc(px, py, 3, 0, Math.PI * 2)
+      ctx.fillStyle = dot.color_hex
+      ctx.fill()
+    })
+  }
 
   // Load session from localStorage on mount
   useEffect(() => {
@@ -59,7 +111,7 @@ export default function Home() {
         if (parsed.revealed) {
           fetchAllDots(parsed.sessionId)
         }
-        // If not revealed, canvas stays blank (only user's dots from localStorage if any)
+        // If not revealed, canvas stays blank (localDots starts empty)
       } catch (e) {
         console.error('Error loading session:', e)
       }
@@ -126,10 +178,10 @@ export default function Home() {
     }
   }
 
-  const placeDot = async (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!session || !canvasRef.current) return
+  const placeDot = async (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!session || !canvasContainerRef.current) return
 
-    const rect = canvasRef.current.getBoundingClientRect()
+    const rect = canvasContainerRef.current.getBoundingClientRect()
     // Compute normalized coordinates [0,1]
     let xNorm = (e.clientX - rect.left) / rect.width
     let yNorm = (e.clientY - rect.top) / rect.height
@@ -137,6 +189,19 @@ export default function Home() {
     // Clamp to [0,1]
     xNorm = Math.max(0, Math.min(1, xNorm))
     yNorm = Math.max(0, Math.min(1, yNorm))
+
+    // Optimistic UI: Add dot immediately to localDots
+    const optimisticDot: Dot = {
+      x: xNorm,
+      y: yNorm,
+      color_hex: session.colorHex,
+      phase: 'blind',
+      created_at: new Date().toISOString()
+    }
+
+    if (!isRevealed) {
+      setLocalDots(prev => [...prev, optimisticDot])
+    }
 
     try {
       const response = await fetch('/api/dots/place', {
@@ -152,6 +217,10 @@ export default function Home() {
       const data = await response.json()
 
       if (!response.ok) {
+        // Remove optimistic dot on failure
+        if (!isRevealed) {
+          setLocalDots(prev => prev.slice(0, -1))
+        }
         alert(data.error || 'Failed to place dot')
         return
       }
@@ -173,18 +242,15 @@ export default function Home() {
       // Handle auto-reveal: when blind dots reach 0 (10 used), automatically fetch all dots
       if (!session.revealed && updatedSession.revealed) {
         // Just became revealed - fetch all dots immediately
+        setLocalDots([]) // Clear local dots
         fetchAllDots(updatedSession.sessionId)
-      } else if (!updatedSession.revealed) {
-        // Still in blind phase - only show our own dots
-        setDots(prev => [...prev, {
-          x: xNorm,
-          y: yNorm,
-          color_hex: updatedSession.colorHex,
-          phase: 'blind',
-          created_at: new Date().toISOString()
-        }])
       }
+      // If still in blind phase, optimistic dot is already in localDots
     } catch (error) {
+      // Remove optimistic dot on error
+      if (!isRevealed) {
+        setLocalDots(prev => prev.slice(0, -1))
+      }
       console.error('Error placing dot:', error)
       alert('Failed to place dot')
     }
@@ -200,7 +266,7 @@ export default function Home() {
         return
       }
 
-      setDots(data)
+      setRevealedDots(data)
     } catch (error) {
       console.error('Error fetching all dots:', error)
     }
@@ -366,27 +432,14 @@ export default function Home() {
       {/* Full Viewport Canvas */}
       {session && (
         <div
-          ref={canvasRef}
-          className={styles.canvas}
-          onClick={placeDot}
+          ref={canvasContainerRef}
+          className={styles.canvasContainer}
         >
-          {canvasSize.width > 0 && canvasSize.height > 0 && dots.map((dot, idx) => {
-            // Convert normalized coordinates [0,1] to pixel positions
-            const px = dot.x * canvasSize.width
-            const py = dot.y * canvasSize.height
-            
-            return (
-              <div
-                key={idx}
-                className={styles.dot}
-                style={{
-                  left: `${px}px`,
-                  top: `${py}px`,
-                  backgroundColor: dot.color_hex
-                }}
-              />
-            )
-          })}
+          <canvas
+            ref={canvasRef}
+            className={styles.canvas}
+            onClick={placeDot}
+          />
         </div>
       )}
     </>
