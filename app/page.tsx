@@ -395,7 +395,7 @@ export default function Home() {
     } finally {
       setIsFlushing(false)
     }
-  }, [serverSession, isRevealed, triggerReveal])
+  }, [serverSession, isRevealed])
 
   // Debounced flush: send buffer after debounce period or when buffer reaches size limit
   useEffect(() => {
