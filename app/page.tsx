@@ -26,6 +26,7 @@ interface Dot {
 
 interface PendingDotPlacement {
   clientDotId: string
+  phase: 'blind' | 'paid' // Set at enqueue time, not computed later
   x: number
   y: number
   clientW: number
@@ -256,6 +257,18 @@ export default function Home() {
     ? Math.max(0, 10 - serverSession.blindDotsUsed - pendingBlindSize)
     : 0
 
+  // Instrumentation: log countdown inputs each render
+  useEffect(() => {
+    if (serverSession && !isRevealed) {
+      console.log('[COUNTDOWN]', {
+        blindDotsUsed: serverSession.blindDotsUsed,
+        pendingBlindSize,
+        remainingDots,
+        pendingBlindIds: Array.from(pendingBlindIds)
+      })
+    }
+  }, [serverSession?.blindDotsUsed, pendingBlindSize, remainingDots, pendingBlindIds, isRevealed])
+
   // Process queue: execute up to MAX_IN_FLIGHT concurrent requests
   useEffect(() => {
     if (inFlightCount >= MAX_IN_FLIGHT || pendingPlacements.length === 0) {
@@ -266,7 +279,9 @@ export default function Home() {
       const next = pendingPlacements[0]
       if (!next || !serverSession) return
 
-      const isBlindRequest = !isRevealed
+      // Capture clientDotId and phase at the start (from request object, not computed)
+      const requestClientDotId = next.clientDotId
+      const requestPhase = next.phase
       
       setInFlightCount(prev => prev + 1)
       setPendingPlacements(prev => prev.slice(1))
@@ -387,10 +402,12 @@ export default function Home() {
         setInFlightCount(prev => prev - 1)
       } finally {
         // Remove pending ID in finally block (exactly once per request)
-        if (isBlindRequest) {
+        // Use request.phase from request object (set at enqueue time), not computed isBlindRequest
+        if (requestPhase === 'blind') {
           setPendingBlindIds(prev => {
             const nextSet = new Set(prev)
-            nextSet.delete(next.clientDotId)
+            nextSet.delete(requestClientDotId) // Use captured variable, not next.clientDotId
+            console.log('[PENDING REMOVE]', requestClientDotId, 'size', nextSet.size)
             return nextSet
           })
         }
@@ -423,6 +440,9 @@ export default function Home() {
     // Generate client dot ID for idempotency
     const clientDotId = crypto.randomUUID()
 
+    // Determine phase at enqueue time (not computed later)
+    const requestPhase: 'blind' | 'paid' = isRevealed ? 'paid' : 'blind'
+
     // Optimistic UI: immediately append dot to localDots (only in blind phase)
     if (!isRevealed) {
       const optimisticDot: Dot = {
@@ -437,13 +457,19 @@ export default function Home() {
       setLocalDots(prev => [...prev, optimisticDot])
       
       // Add pending ID immediately when enqueuing (exactly once)
-      setPendingBlindIds(prev => new Set(prev).add(clientDotId))
+      setPendingBlindIds(prev => {
+        const nextSet = new Set(prev)
+        nextSet.add(clientDotId)
+        console.log('[PENDING ADD]', clientDotId, 'size', nextSet.size)
+        return nextSet
+      })
     }
 
-    // Queue the request
+    // Queue the request with phase set at enqueue time
     const placementPromise = new Promise<Session>((resolve, reject) => {
       setPendingPlacements(prev => [...prev, {
         clientDotId,
+        phase: requestPhase, // Set at enqueue time, not computed later
         x: xNorm,
         y: yNorm,
         clientW: rect.width,
