@@ -39,7 +39,7 @@ export default function Home() {
   const isRevealed = serverSession?.revealed ?? false
   const [isLoadingPurchase, setIsLoadingPurchase] = useState(false)
   const [isSelectingColor, setIsSelectingColor] = useState(false)
-  const [showPurchaseModal, setShowPurchaseModal] = useState(false)
+  const [showPurchasePanel, setShowPurchasePanel] = useState(false)
   const [dotBuffer, setDotBuffer] = useState<BufferedDot[]>([]) // Buffer of dots to send in batch
   const [isFlushing, setIsFlushing] = useState(false) // Track if batch flush is in progress
   const [isRevealing, setIsRevealing] = useState(false) // Track if reveal is in progress
@@ -680,11 +680,7 @@ export default function Home() {
       {session && (
         <button 
           className={styles.badge}
-          onClick={() => {
-            if (isRevealed) {
-              setShowPurchaseModal(true)
-            }
-          }}
+          onClick={() => setShowPurchasePanel(prev => !prev)}
         >
           <div 
             className={styles.badgeSwatch}
@@ -708,20 +704,26 @@ export default function Home() {
         </button>
       )}
 
-      {/* Purchase Modal */}
-      {showPurchaseModal && session && isRevealed && (
-        <div className={styles.modalOverlay} onClick={() => setShowPurchaseModal(false)}>
-          <div className={styles.purchaseModal} onClick={(e) => e.stopPropagation()}>
-            <div className={styles.purchaseModalHeader}>
-              <h3 className={styles.purchaseModalTitle}>Buy Credits</h3>
+      {/* Purchase Panel (Popover) */}
+      {showPurchasePanel && session && isRevealed && (
+        <>
+          {/* Click-outside overlay */}
+          <div 
+            className={styles.panelOverlay}
+            onClick={() => setShowPurchasePanel(false)}
+          />
+          {/* Purchase Panel */}
+          <div className={styles.purchasePanel}>
+            <div className={styles.purchasePanelHeader}>
+              <h3 className={styles.purchasePanelTitle}>Buy Credits</h3>
               <button 
-                className={styles.purchaseModalClose}
-                onClick={() => setShowPurchaseModal(false)}
+                className={styles.purchasePanelClose}
+                onClick={() => setShowPurchasePanel(false)}
               >
                 ×
               </button>
             </div>
-            <div className={styles.purchaseModalContent}>
+            <div className={styles.purchasePanelContent}>
               <p className={styles.currentCredits}>Current Credits: {session.credits}</p>
               <div className={styles.creditButtons}>
                 {creditBundles.map((bundle) => (
@@ -737,7 +739,7 @@ export default function Home() {
               </div>
             </div>
           </div>
-        </div>
+        </>
       )}
 
       {/* Full Viewport Canvas */}

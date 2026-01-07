@@ -76,9 +76,10 @@
 /* Top-right Badge (Clickable) */
 .badge {
   position: fixed;
-  top: 16px;
-  right: 16px;
+  top: 1rem; /* top-4 */
+  right: 1rem; /* right-4 */
   z-index: 50;
+  pointer-events: auto;
   background: rgba(255, 255, 255, 0.8);
   backdrop-filter: blur(8px);
   padding: 8px 12px;
@@ -133,44 +134,60 @@
   width: 100vw;
   height: 100vh;
   background: #fff;
-  z-index: 1;
+  z-index: 0; /* Behind UI */
 }
 
 /* Canvas Element */
 .canvas {
+  position: fixed;
+  inset: 0;
   width: 100%;
   height: 100%;
   cursor: crosshair;
   touch-action: none;
   display: block;
+  z-index: 0; /* Behind UI */
 }
 
-/* Purchase Modal */
-.purchaseModal {
+/* Panel Overlay (Click-outside to close) */
+.panelOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 49; /* Below panel, above canvas */
+  background: transparent;
+}
+
+/* Purchase Panel (Popover) */
+.purchasePanel {
+  position: fixed;
+  top: 3.5rem; /* top-14 */
+  right: 1rem; /* right-4 */
+  z-index: 50;
   background: #fff;
   border-radius: 16px;
   padding: 24px;
   box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
   max-width: 400px;
-  width: 90%;
-  position: relative;
+  width: calc(100vw - 2rem);
+  max-width: 400px;
+  pointer-events: auto;
 }
 
-.purchaseModalHeader {
+.purchasePanelHeader {
   display: flex;
   justify-content: space-between;
   align-items: center;
   margin-bottom: 20px;
 }
 
-.purchaseModalTitle {
+.purchasePanelTitle {
   font-size: 20px;
   font-weight: 600;
   color: #000;
   margin: 0;
 }
 
-.purchaseModalClose {
+.purchasePanelClose {
   background: none;
   border: none;
   font-size: 28px;
@@ -187,11 +204,11 @@
   transition: background 0.2s;
 }
 
-.purchaseModalClose:hover {
+.purchasePanelClose:hover {
   background: rgba(0, 0, 0, 0.05);
 }
 
-.purchaseModalContent {
+.purchasePanelContent {
   display: flex;
   flex-direction: column;
   gap: 16px;
