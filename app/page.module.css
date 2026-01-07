@@ -1,110 +1,121 @@
+/* Main container - pure white */
 .main {
-  min-height: 100vh;
-  padding: 20px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-}
-
-.header {
-  width: 100%;
-  max-width: 1200px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 20px;
-  padding: 20px;
-  background: rgba(255, 255, 255, 0.95);
-  border-radius: 12px;
-  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-}
-
-.header h1 {
-  font-size: 2rem;
-  color: #333;
-  margin: 0;
-}
-
-.sessionInfo {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 8px;
-}
-
-.sessionInfo > span {
-  font-size: 1.1rem;
-  font-weight: 600;
-  color: #333;
-}
-
-.stats {
-  display: flex;
-  gap: 16px;
-  font-size: 0.9rem;
-  color: #666;
-}
-
-.initForm {
-  background: rgba(255, 255, 255, 0.95);
-  padding: 40px;
-  border-radius: 12px;
-  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 20px;
-  max-width: 400px;
-}
-
-.initForm h2 {
-  color: #333;
-  margin: 0;
-}
-
-.colorInput {
-  width: 100%;
-  padding: 12px 16px;
-  font-size: 1rem;
-  border: 2px solid #ddd;
-  border-radius: 8px;
-  outline: none;
-  transition: border-color 0.2s;
-}
-
-.colorInput:focus {
-  border-color: #667eea;
-}
-
-.initButton {
-  padding: 12px 24px;
-  font-size: 1rem;
-  font-weight: 600;
-  color: white;
-  background: #667eea;
-  border: none;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: background 0.2s;
-}
-
-.initButton:hover {
-  background: #5568d3;
-}
-
-.canvas {
-  width: 100%;
-  max-width: 1200px;
-  height: 600px;
-  background: white;
-  border-radius: 12px;
-  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-  position: relative;
-  cursor: crosshair;
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  background: #fff;
   overflow: hidden;
 }
 
+/* Modal Overlay */
+.modalOverlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.06);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+/* Modal */
+.modal {
+  background: #fff;
+  border-radius: 16px;
+  padding: 48px 40px;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+  max-width: 500px;
+  width: 90%;
+}
+
+.modalTitle {
+  font-size: 24px;
+  font-weight: 600;
+  color: #000;
+  text-align: center;
+  margin-bottom: 32px;
+}
+
+/* Swatch Grid */
+.swatchGrid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 24px;
+  justify-items: center;
+}
+
+/* Color Swatch */
+.swatch {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  padding: 0;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.swatch:hover {
+  transform: scale(1.05);
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+}
+
+.swatch:active {
+  transform: scale(0.98);
+}
+
+.swatch:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.2);
+}
+
+/* Top-right Badge */
+.badge {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 50;
+  background: rgba(255, 255, 255, 0.8);
+  backdrop-filter: blur(8px);
+  padding: 8px 12px;
+  border-radius: 9999px;
+  box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: #000;
+}
+
+.badgeSwatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.badgeText {
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+/* Full Viewport Canvas */
+.canvas {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  background: #fff;
+  cursor: crosshair;
+  overflow: hidden;
+  touch-action: none;
+}
+
+/* Dot */
 .dot {
   position: absolute;
   width: 12px;
@@ -112,92 +123,10 @@
   border-radius: 50%;
   transform: translate(-50%, -50%);
   pointer-events: none;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
 }
 
-.controls {
-  margin-top: 20px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 12px;
+/* Hidden reveal button (for programmatic access if needed) */
+.hiddenRevealButton {
+  display: none;
 }
-
-.revealButton {
-  padding: 12px 24px;
-  font-size: 1rem;
-  font-weight: 600;
-  color: white;
-  background: #10b981;
-  border: none;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: background 0.2s;
-}
-
-.revealButton:hover {
-  background: #059669;
-}
-
-.revealedText {
-  color: white;
-  font-size: 1rem;
-  text-align: center;
-  padding: 12px 24px;
-  background: rgba(255, 255, 255, 0.2);
-  border-radius: 8px;
-}
-
-.revealedSection {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 20px;
-  width: 100%;
-  max-width: 600px;
-}
-
-.creditPurchase {
-  background: rgba(255, 255, 255, 0.95);
-  padding: 24px;
-  border-radius: 12px;
-  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-  width: 100%;
-}
-
-.creditPurchase h3 {
-  color: #333;
-  margin: 0 0 16px 0;
-  font-size: 1.25rem;
-  text-align: center;
-}
-
-.creditButtons {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.creditButton {
-  padding: 14px 24px;
-  font-size: 1rem;
-  font-weight: 600;
-  color: white;
-  background: #667eea;
-  border: none;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: background 0.2s, transform 0.1s;
-  width: 100%;
-}
-
-.creditButton:hover:not(:disabled) {
-  background: #5568d3;
-  transform: translateY(-1px);
-}
-
-.creditButton:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-

@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from 'react'
 import styles from './page.module.css'
 import { STRIPE_PRICES } from '@/lib/stripe-prices'
+import { COLOR_SWATCHES } from '@/lib/color-swatches'
 
 interface Session {
   sessionId: string
@@ -23,10 +24,10 @@ interface Dot {
 
 export default function Home() {
   const [session, setSession] = useState<Session | null>(null)
-  const [colorNameInput, setColorNameInput] = useState('')
   const [dots, setDots] = useState<Dot[]>([])
   const [isRevealed, setIsRevealed] = useState(false)
   const [isLoadingPurchase, setIsLoadingPurchase] = useState(false)
+  const [isSelectingColor, setIsSelectingColor] = useState(false)
   const canvasRef = useRef<HTMLDivElement>(null)
 
   // Load session from localStorage on mount
@@ -45,6 +46,8 @@ export default function Home() {
       } catch (e) {
         console.error('Error loading session:', e)
       }
+    } else {
+      setIsSelectingColor(true)
     }
   }, [])
 
@@ -69,23 +72,21 @@ export default function Home() {
     }
   }, [session])
 
-  const initSession = async () => {
-    if (!colorNameInput.trim()) {
-      alert('Please enter a color name')
-      return
-    }
-
+  const initSession = async (colorName: string) => {
+    setIsSelectingColor(false)
+    
     try {
       const response = await fetch('/api/session/init', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ colorName: colorNameInput.trim() })
+        body: JSON.stringify({ colorName })
       })
 
       const data = await response.json()
 
       if (!response.ok) {
         alert(data.error || 'Failed to initialize session')
+        setIsSelectingColor(true)
         return
       }
 
@@ -100,10 +101,10 @@ export default function Home() {
 
       setSession(newSession)
       localStorage.setItem('dotSession', JSON.stringify(newSession))
-      setColorNameInput('')
     } catch (error) {
       console.error('Error initializing session:', error)
       alert('Failed to initialize session')
+      setIsSelectingColor(true)
     }
   }
 
@@ -286,88 +287,75 @@ export default function Home() {
     { priceId: STRIPE_PRICES.CREDITS_500, credits: 500, price: 5.00, label: '500 Credits - $5.00' },
   ]
 
+  // Find the swatch color for display
+  const swatchColor = session ? COLOR_SWATCHES.find(s => s.name === session.colorName) : null
+
   return (
-    <main className={styles.main}>
-      <div className={styles.header}>
-        <h1>Dot Canvas</h1>
-        {session && (
-          <div className={styles.sessionInfo}>
-            <span>{session.colorName} — {session.colorHex}</span>
-            <div className={styles.stats}>
-              <span>Blind: {session.blindDotsUsed}/10</span>
-              {isRevealed && <span>Credits: {session.credits}</span>}
+    <>
+      {/* Color Selection Modal */}
+      {isSelectingColor && !session && (
+        <div className={styles.modalOverlay}>
+          <div className={styles.modal}>
+            <h2 className={styles.modalTitle}>Choose your color</h2>
+            <div className={styles.swatchGrid}>
+              {COLOR_SWATCHES.map((swatch) => (
+                <button
+                  key={swatch.name}
+                  className={styles.swatch}
+                  onClick={() => initSession(swatch.name)}
+                  style={{ backgroundColor: swatch.hex }}
+                  aria-label={swatch.name}
+                />
+              ))}
             </div>
           </div>
-        )}
-      </div>
-
-      {!session ? (
-        <div className={styles.initForm}>
-          <h2>Choose Your Color</h2>
-          <input
-            type="text"
-            value={colorNameInput}
-            onChange={(e) => setColorNameInput(e.target.value)}
-            placeholder="Enter color name (e.g., Blue, Red, Green)"
-            className={styles.colorInput}
-            onKeyPress={(e) => e.key === 'Enter' && initSession()}
-          />
-          <button onClick={initSession} className={styles.initButton}>
-            Start Session
-          </button>
         </div>
-      ) : (
-        <>
-          <div
-            ref={canvasRef}
-            className={styles.canvas}
-            onClick={placeDot}
-          >
-            {dots.map((dot, idx) => (
-              <div
-                key={idx}
-                className={styles.dot}
-                style={{
-                  left: `${dot.x}%`,
-                  top: `${dot.y}%`,
-                  backgroundColor: dot.color_hex
-                }}
-              />
-            ))}
-          </div>
-
-          <div className={styles.controls}>
-            {!isRevealed && session.blindDotsUsed >= 10 && (
-              <button onClick={revealSession} className={styles.revealButton}>
-                Reveal Canvas
-              </button>
-            )}
-            {isRevealed && (
-              <div className={styles.revealedSection}>
-                <p className={styles.revealedText}>
-                  Canvas revealed! You can see all dots. Credits required for new dots.
-                </p>
-                <div className={styles.creditPurchase}>
-                  <h3>Buy Credits</h3>
-                  <div className={styles.creditButtons}>
-                    {creditBundles.map((bundle) => (
-                      <button
-                        key={bundle.priceId}
-                        onClick={() => purchaseCredits(bundle.priceId)}
-                        disabled={isLoadingPurchase}
-                        className={styles.creditButton}
-                      >
-                        {bundle.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        </>
       )}
-    </main>
+
+      {/* Top-right Badge */}
+      {session && (
+        <div className={styles.badge}>
+          <div 
+            className={styles.badgeSwatch}
+            style={{ backgroundColor: session.colorHex }}
+          />
+          <span className={styles.badgeText}>
+            {session.colorName} — {session.colorHex.toUpperCase()}
+          </span>
+        </div>
+      )}
+
+      {/* Full Viewport Canvas */}
+      {session && (
+        <div
+          ref={canvasRef}
+          className={styles.canvas}
+          onClick={placeDot}
+        >
+          {dots.map((dot, idx) => (
+            <div
+              key={idx}
+              className={styles.dot}
+              style={{
+                left: `${dot.x}%`,
+                top: `${dot.y}%`,
+                backgroundColor: dot.color_hex
+              }}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* Hidden controls for reveal and credits (can be triggered programmatically if needed) */}
+      {session && !isRevealed && session.blindDotsUsed >= 10 && (
+        <button 
+          onClick={revealSession} 
+          className={styles.hiddenRevealButton}
+          style={{ display: 'none' }}
+        >
+          Reveal
+        </button>
+      )}
+    </>
   )
 }
-
