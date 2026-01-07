@@ -1,5 +1,7 @@
 # Dot App - Next.js with Supabase & Stripe
 
+Deployed on Vercel 🚀
+
 A collaborative dot canvas application where users can place dots, reveal the canvas, and purchase credits for additional placements.
 
 ## Features
