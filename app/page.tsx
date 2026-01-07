@@ -34,7 +34,9 @@ export default function Home() {
   const [serverSession, setServerSession] = useState<Session | null>(null) // Server state (source of truth)
   const [localDots, setLocalDots] = useState<Dot[]>([]) // Blind phase dots (optimistic + confirmed)
   const [revealedDots, setRevealedDots] = useState<Dot[]>([]) // All dots after reveal
-  const [isRevealed, setIsRevealed] = useState(false)
+  
+  // Derived: isRevealed from serverSession.revealed
+  const isRevealed = serverSession?.revealed ?? false
   const [isLoadingPurchase, setIsLoadingPurchase] = useState(false)
   const [isSelectingColor, setIsSelectingColor] = useState(false)
   const [showPurchaseModal, setShowPurchaseModal] = useState(false)
@@ -159,7 +161,6 @@ export default function Home() {
         }
 
         setServerSession(restoredSession)
-        setIsRevealed(restoredSession.revealed)
         localStorage.setItem('dotSession', JSON.stringify(restoredSession))
 
         // If revealed, fetch all dots
@@ -187,7 +188,6 @@ export default function Home() {
             }
 
             setServerSession(updatedSession)
-            setIsRevealed(updatedSession.revealed)
             localStorage.setItem('dotSession', JSON.stringify(updatedSession))
           }
 
@@ -237,7 +237,6 @@ export default function Home() {
       }
 
       setServerSession(newSession)
-      setIsRevealed(newSession.revealed)
       localStorage.setItem('dotSession', JSON.stringify(newSession))
     } catch (error) {
       console.error('Error initializing session:', error)
@@ -261,6 +260,22 @@ export default function Home() {
       })
     }
   }, [serverSession?.blindDotsUsed, dotBuffer.length, remainingDots, isRevealed])
+
+  // Auto-fetch all dots when revealed becomes true
+  useEffect(() => {
+    if (!serverSession?.revealed || !serverSession?.sessionId) return
+    
+    fetch(`/api/dots/all?sessionId=${serverSession.sessionId}`)
+      .then(r => r.json())
+      .then(data => {
+        if (Array.isArray(data)) {
+          setRevealedDots(data)
+        }
+      })
+      .catch(error => {
+        console.error('[CLIENT] Error fetching all dots on reveal:', error)
+      })
+  }, [serverSession?.revealed, serverSession?.sessionId])
 
   // Flush buffer: send buffered dots to server in batch
   const flushBuffer = useCallback(async () => {
@@ -301,7 +316,6 @@ export default function Home() {
               credits: data.session.credits
             }
             setServerSession(updatedSession)
-            setIsRevealed(updatedSession.revealed)
             localStorage.setItem('dotSession', JSON.stringify(updatedSession))
           }
           
@@ -332,7 +346,6 @@ export default function Home() {
               credits: data.session.credits
             }
             setServerSession(updatedSession)
-            setIsRevealed(updatedSession.revealed)
             localStorage.setItem('dotSession', JSON.stringify(updatedSession))
           }
           // Silently stop accepting clicks (no error logging)
@@ -369,7 +382,6 @@ export default function Home() {
         return prev
       })
       
-      setIsRevealed(updatedSession.revealed)
       localStorage.setItem('dotSession', JSON.stringify(updatedSession))
 
       // Remove optimistic dots that weren't accepted
@@ -530,7 +542,6 @@ export default function Home() {
       }
 
       setServerSession(refreshedSession)
-      setIsRevealed(refreshedSession.revealed)
       localStorage.setItem('dotSession', JSON.stringify(refreshedSession))
 
       // Step 3: Only after revealed is confirmed true, fetch all dots
@@ -596,7 +607,6 @@ export default function Home() {
       }
 
       setServerSession(updatedSession)
-      setIsRevealed(updatedSession.revealed)
       localStorage.setItem('dotSession', JSON.stringify(updatedSession))
     } catch (error) {
       console.error('Error fetching session snapshot:', error)
