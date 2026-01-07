@@ -335,7 +335,7 @@ export default function Home() {
 
   // Credit bundle configurations
   const creditBundles = [
-    { priceId: STRIPE_PRICES.CREDITS_25, credits: 25, price: 0.25, label: '25 Credits - $0.25' },
+    { priceId: STRIPE_PRICES.CREDITS_50, credits: 50, price: 0.50, label: '50 Credits - $0.50' },
     { priceId: STRIPE_PRICES.CREDITS_100, credits: 100, price: 1.00, label: '100 Credits - $1.00' },
     { priceId: STRIPE_PRICES.CREDITS_500, credits: 500, price: 5.00, label: '500 Credits - $5.00' },
   ]

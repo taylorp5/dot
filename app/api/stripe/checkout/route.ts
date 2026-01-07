@@ -34,6 +34,24 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    // Validate minimum charge: ensure price is at least $0.50 (Stripe minimum)
+    // Fetch price details from Stripe to verify amount
+    try {
+      const price = await stripe.prices.retrieve(priceId)
+      const amount = price.unit_amount || 0
+      const amountInDollars = amount / 100 // Convert from cents
+      
+      if (amountInDollars < 0.50) {
+        return NextResponse.json(
+          { error: 'Minimum charge is $0.50' },
+          { status: 400 }
+        )
+      }
+    } catch (priceError: any) {
+      console.error('Error fetching price from Stripe:', priceError)
+      // Continue anyway - Stripe will reject if price is invalid
+    }
+
     // Create Stripe Checkout Session
     let checkoutSession
     try {

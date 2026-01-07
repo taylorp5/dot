@@ -41,9 +41,9 @@ STRIPE_WEBHOOK_SECRET=your_stripe_webhook_secret_here
 NEXT_PUBLIC_SITE_URL=http://localhost:3000
 
 # Optional: Stripe Price IDs (or set in lib/stripe-prices.ts)
-STRIPE_PRICE_ID_25=price_xxxxxxxxxxxxx
-STRIPE_PRICE_ID_100=price_xxxxxxxxxxxxx
-STRIPE_PRICE_ID_500=price_xxxxxxxxxxxxx
+NEXT_PUBLIC_STRIPE_PRICE_ID_50=price_xxxxxxxxxxxxx
+NEXT_PUBLIC_STRIPE_PRICE_ID_100=price_xxxxxxxxxxxxx
+NEXT_PUBLIC_STRIPE_PRICE_ID_500=price_xxxxxxxxxxxxx
 ```
 
 3. Run the Supabase migration:
@@ -56,11 +56,11 @@ STRIPE_PRICE_ID_500=price_xxxxxxxxxxxxx
 
    - Go to Stripe Dashboard > Products
    - Create 3 products with the following prices:
-     - **25 Credits**: $0.25 (one-time payment)
+     - **50 Credits**: $0.50 (one-time payment, minimum Stripe charge)
      - **100 Credits**: $1.00 (one-time payment)
      - **500 Credits**: $5.00 (one-time payment)
    - Copy each Price ID (starts with `price_`)
-   - Update `lib/stripe-prices.ts` with your Price IDs, or set them as environment variables
+   - Update `lib/stripe-prices.ts` with your Price IDs, or set them as environment variables (use `NEXT_PUBLIC_` prefix)
 
 5. Set up Stripe Webhook:
 
