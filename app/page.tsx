@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
+import { v4 as uuidv4 } from 'uuid'
 import { COLOR_SWATCHES } from '@/lib/color-swatches'
 import { STRIPE_PRICES } from '@/lib/stripe-prices'
 
@@ -27,12 +28,13 @@ export default function Home() {
   const [session, setSession] = useState<Session | null>(null)
   const [showColorPicker, setShowColorPicker] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
-  const [myBlindDots, setMyBlindDots] = useState<Dot[]>([]) // Only this session's blind dots
-  const [revealedDots, setRevealedDots] = useState<Dot[]>([]) // All dots after reveal
+  const [myDots, setMyDots] = useState<Dot[]>([]) // Only dots for this session (blind+paid)
+  const [allDots, setAllDots] = useState<Dot[]>([]) // All dots, only used after reveal
   const [showBuyPanel, setShowBuyPanel] = useState(false)
   const [isPlacing, setIsPlacing] = useState(false)
   const [isLoadingPurchase, setIsLoadingPurchase] = useState(false)
   const clickableAreaRef = useRef<HTMLDivElement>(null)
+  const hydratedSessionIdRef = useRef<string | null>(null) // Guard to prevent multiple hydrations
 
   // Hydrate session from localStorage on mount
   useEffect(() => {
@@ -91,7 +93,7 @@ export default function Home() {
 
   // Monitor session state for reveal trigger
   useEffect(() => {
-    if (session && session.revealed && revealedDots.length === 0) {
+    if (session && session.revealed && allDots.length === 0) {
       // Fetch all dots exactly once when revealed
       fetchAllDots(session.sessionId)
     }
@@ -127,7 +129,49 @@ export default function Home() {
     }
   }, [session])
 
+  // Dedupe function: by clientDotId if exists, otherwise by rounded x/y + phase
+  // Prefers server dots (with createdAt) over optimistic dots (with clientDotId)
+  const dedupeByClientDotIdOrXY = (dots: Dot[]): Dot[] => {
+    const seen = new Map<string, Dot>()
+    
+    for (const dot of dots) {
+      let key: string
+      
+      if (dot.clientDotId) {
+        // Dedupe by clientDotId
+        key = `client-${dot.clientDotId}`
+      } else {
+        // Dedupe by rounded x/y + phase
+        const roundedX = Math.round(dot.x * 10000)
+        const roundedY = Math.round(dot.y * 10000)
+        key = `xy-${roundedX}-${roundedY}-${dot.phase}`
+      }
+      
+      // Prefer server dots (with createdAt) over optimistic dots (with clientDotId)
+      const existing = seen.get(key)
+      if (!existing) {
+        seen.set(key, dot)
+      } else if (dot.createdAt && !existing.createdAt) {
+        // Replace optimistic dot with server dot
+        seen.set(key, dot)
+      } else if (!dot.createdAt && existing.createdAt) {
+        // Keep existing server dot, ignore optimistic dot
+        // (do nothing)
+      } else {
+        // Both have createdAt or both don't - keep first (shouldn't happen)
+        // (do nothing)
+      }
+    }
+    
+    return Array.from(seen.values())
+  }
+
   const fetchMyDots = async (sessionId: string) => {
+    // Guard: only hydrate once per sessionId
+    if (hydratedSessionIdRef.current === sessionId) {
+      return
+    }
+    
     try {
       const response = await fetch(`/api/dots/mine?sessionId=${sessionId}`)
       const data = await response.json()
@@ -138,7 +182,7 @@ export default function Home() {
       }
 
       // Map to Dot interface format
-      const dots: Dot[] = data.map((dot: any) => ({
+      const serverDots: Dot[] = data.map((dot: any) => ({
         x: dot.x,
         y: dot.y,
         colorHex: dot.colorHex,
@@ -146,7 +190,9 @@ export default function Home() {
         createdAt: dot.createdAt
       }))
 
-      setMyBlindDots(dots)
+      // IMPORTANT: merge instead of overwrite
+      setMyDots(prev => dedupeByClientDotIdOrXY([...prev, ...serverDots]))
+      hydratedSessionIdRef.current = sessionId
     } catch (error) {
       console.error('Error fetching my dots:', error)
     }
@@ -172,7 +218,7 @@ export default function Home() {
         createdAt: dot.createdAt
       }))
 
-      setRevealedDots(dots)
+      setAllDots(dots)
     } catch (error) {
       console.error('Error fetching all dots:', error)
     }
@@ -203,7 +249,9 @@ export default function Home() {
       }
 
       setSession(newSession)
-      setMyBlindDots([]) // Clear blind dots for new session
+      setMyDots([]) // Clear dots for new session
+      setAllDots([]) // Clear all dots for new session
+      hydratedSessionIdRef.current = null // Reset hydration guard
       localStorage.setItem('justadot_session_id', newSession.sessionId)
       setShowColorPicker(false)
     } catch (error) {
@@ -239,9 +287,9 @@ export default function Home() {
     const yNorm = Math.max(0, Math.min(1, y))
 
     // Generate client dot ID for optimistic update
-    const clientDotId = `client-${Date.now()}-${Math.random()}`
+    const clientDotId = uuidv4()
 
-    // Immediately add optimistic dot to myBlindDots
+    // Immediately add optimistic dot to myDots
     const optimisticDot: Dot = {
       x: xNorm,
       y: yNorm,
@@ -249,7 +297,7 @@ export default function Home() {
       phase: 'blind',
       clientDotId: clientDotId
     }
-    setMyBlindDots(prev => [...prev, optimisticDot])
+    setMyDots(prev => [...prev, optimisticDot])
 
     setIsPlacing(true)
 
@@ -268,8 +316,8 @@ export default function Home() {
       const data = await response.json()
 
       if (!response.ok) {
-        // Remove optimistic dot on failure
-        setMyBlindDots(prev => prev.filter(dot => dot.clientDotId !== clientDotId))
+        // Remove optimistic dot on failure OR keep it (but do NOT reset myDots)
+        setMyDots(prev => prev.filter(dot => dot.clientDotId !== clientDotId))
         
         if (response.status === 409 && data.error === 'NO_FREE_DOTS') {
           // Update session from response
@@ -291,33 +339,29 @@ export default function Home() {
         return
       }
 
-      // Update session from response (authoritative)
+      // On success: setSession(response.session) ONLY
       if (data.session) {
-        const updatedSession: Session = {
+        setSession({
           sessionId: data.session.sessionId,
           colorName: session.colorName,
           colorHex: data.session.colorHex,
           blindDotsUsed: data.session.blindDotsUsed,
           revealed: data.session.revealed,
           credits: data.session.credits
-        }
-
-        setSession(updatedSession)
-        localStorage.setItem('justadot_session_id', updatedSession.sessionId)
+        })
+        localStorage.setItem('justadot_session_id', data.session.sessionId)
 
         // If revealed, fetch all dots exactly once
-        if (updatedSession.revealed && !session.revealed) {
-          await fetchAllDots(updatedSession.sessionId)
-        } else {
-          // Refresh my dots to get server-confirmed version
-          await fetchMyDots(updatedSession.sessionId)
+        if (data.session.revealed && !session.revealed) {
+          await fetchAllDots(data.session.sessionId)
         }
+        // Do NOT refresh myDots - keep optimistic dot, it will be deduped on next hydration
       }
 
       setIsPlacing(false)
     } catch (error) {
-      // Remove optimistic dot on error
-      setMyBlindDots(prev => prev.filter(dot => dot.clientDotId !== clientDotId))
+      // Remove optimistic dot on error OR keep it (but do NOT reset myDots)
+      setMyDots(prev => prev.filter(dot => dot.clientDotId !== clientDotId))
       console.error('Error placing dot:', error)
       alert('Failed to place dot')
       setIsPlacing(false)
@@ -439,9 +483,9 @@ export default function Home() {
       {/* Blind Mode UI - Show only user's own dots */}
       {session && !session.revealed && (
         <div className="fixed inset-0 z-10" style={{ backgroundColor: 'white' }}>
-          {myBlindDots.map((dot, i) => (
+          {myDots.map((dot, i) => (
             <div
-              key={dot.clientDotId || `blind-${i}-${dot.createdAt || ''}`}
+              key={dot.clientDotId || `my-${i}-${dot.createdAt || ''}`}
               style={{
                 position: 'absolute',
                 left: `${dot.x * 100}%`,
@@ -498,7 +542,7 @@ export default function Home() {
           </div>
           
           {/* All Revealed Dots */}
-          {revealedDots.map((dot, i) => (
+          {allDots.map((dot, i) => (
             <div
               key={`${dot.sessionId || 'unknown'}-${i}-${dot.createdAt || ''}`}
               style={{
@@ -537,17 +581,17 @@ export default function Home() {
         }}>
           {!session.revealed ? (
             <>
-              <div>Blind dots: {myBlindDots.length}</div>
+              <div>My dots: {myDots.length}</div>
               <div style={{ marginTop: '4px', fontSize: '10px' }}>
                 Dots left: {Math.max(0, 10 - session.blindDotsUsed)}
               </div>
             </>
           ) : (
             <>
-              <div>Reveal dots: {revealedDots.length}</div>
-              {revealedDots[0] && (
+              <div>All dots: {allDots.length}</div>
+              {allDots[0] && (
                 <div style={{ marginTop: '4px', fontSize: '10px' }}>
-                  First: x={revealedDots[0].x.toFixed(3)}, y={revealedDots[0].y.toFixed(3)}, color={revealedDots[0].colorHex}
+                  First: x={allDots[0].x.toFixed(3)}, y={allDots[0].y.toFixed(3)}, color={allDots[0].colorHex}
                 </div>
               )}
             </>
