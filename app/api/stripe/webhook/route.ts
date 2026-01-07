@@ -44,19 +44,8 @@ export async function POST(request: NextRequest) {
     // Get sessionId from metadata or client_reference_id
     const sessionId = session.metadata?.sessionId || session.client_reference_id
     
-    // Get priceId from metadata or expand line_items
-    let priceId = session.metadata?.priceId
-    if (!priceId && session.line_items) {
-      // If line_items is a string (ID), we need to expand it
-      // For now, rely on metadata
-      priceId = session.metadata?.priceId
-    }
-    
-    // If still no priceId, try to get from expanded line_items
-    if (!priceId && typeof session.line_items !== 'string') {
-      const lineItems = session.line_items as Stripe.Checkout.Session.LineItems
-      priceId = lineItems?.data?.[0]?.price?.id || undefined
-    }
+    // Get priceId from metadata (we store it there in checkout route)
+    const priceId = session.metadata?.priceId
 
     if (!sessionId || !priceId) {
       console.error('Missing sessionId or priceId in webhook event')
